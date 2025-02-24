@@ -92,3 +92,4 @@ npm run dev
 
 ## Contributing
 Feel free to fork the project and make improvements or submit bug reports or issues.
+# swellextension
