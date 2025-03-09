@@ -11,6 +11,7 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
 });
 
 async function fetchCompanyData(domain: string): Promise<CompanyData> {
+  console.log('Fetching company data for domain:', domain);
   try {
     const companyName = extractCompanyName(domain);
     console.log('Extracted company name:', companyName);
@@ -33,7 +34,7 @@ async function fetchCompanyData(domain: string): Promise<CompanyData> {
             - Notable investors
             - Sources of information
             
-            Format the response as a JSON object with these exact keys:
+            EXTREMELY IMPORTANT: Your response must ONLY contain the JSON object and absolutely nothing else - no markdown formatting (like \`\`\`json), no explanations, no additional text. Return ONLY a raw JSON object with these exact keys:
             {
               "companyName": string,
               "totalFunding": string,
@@ -47,10 +48,11 @@ async function fetchCompanyData(domain: string): Promise<CompanyData> {
       })
     });
 
+    console.log('API request sent, awaiting response...');
     if (!response.ok) {
         const errorText = await response.text();
         console.log('API response not ok:', response.status, errorText)
-        throw new Error('Failed to fetch company data: ${response.status} ${errorText}' );
+        throw new Error(`Failed to fetch company data: ${response.status} ${errorText}`);
     }
 
     const perplexityResponse = await response.json();
@@ -66,20 +68,71 @@ async function fetchCompanyData(domain: string): Promise<CompanyData> {
 
     // The Perplexity response will be in perplexityResponse.choices[0].message.content
     // This contains a string that should be valid JSON
-    let parsedContent: PerplexityResponse;
+    let parsedContent: PerplexityResponse | null = null;
+    let parseSuccess = false;
+
     try {
       parsedContent = JSON.parse(responseContent);
-      console.log('Parsed content:', parsedContent);
+      parseSuccess = true;
+      console.log('Direct parsing suceeded!');
     } catch (error) {
-      console.error('Failed to parse Perplexity response:', error);
-      console.error('Raw content that failed to parse:', responseContent);
-      throw new Error('Invalid response format from API');
+      console.error('Failed to parse response directly:', error);
+      console.log('Attempting to extract JSON from markdown or text...');
+
+      //Try to extract JSON between code block markers
+      let jsonMatch = responseContent.match(/```json\n([\s\S]+)\n```/);
+
+      if (jsonMatch && jsonMatch[1]) {
+        // Found JSON in code block
+        const extractedJson = jsonMatch[1].trim();
+        console.log('Extracted JSON from code block:', extractedJson);  
+
+        try {
+          parsedContent = JSON.parse(extractedJson);
+          parseSuccess = true;
+          console.log('Successfully parsed extracted JSON from code block'); 
+        } catch (extractError) {
+          console.error('Failed to parse JSON from code block:', extractError);
+        }
+      }
+          
+      if (!parseSuccess) {
+        // Try to find anything that looks like a JSON object with curly braces
+        jsonMatch = responseContent.match(/{([\s\S]+)}/);
+        if (jsonMatch) { 
+          try { 
+            console.log('Attempting to parse JSON with just braces:', jsonMatch[0]);
+            parsedContent = JSON.parse(jsonMatch[0]);
+            parseSuccess = true;
+            console.log('Successfully parsed JSON with braces extraction');
+          } catch (lastError) {
+            console.error('All parsing attempts failed:', lastError);
+            throw new Error('Invalid response format from API - exhausted all parsing options');
+          }
+        } else {
+          throw new Error('Invalid response format from API - no valid JSON structure found');
+        }
+      }
     }
+
+    if (!parseSuccess || !parsedContent) {
+      throw new Error('Failed to parse response from API');
+    }
+
 
     // Log validation results
     const validationResult = validatePerplexityResponse(parsedContent);
     console.log('Validation result:', validationResult);
     if (!validationResult) {
+      console.error('Failed validation. Missing or invalid fields:', {
+        hasCompanyName: typeof parsedContent.companyName === 'string',
+        hasTotalFunding: typeof parsedContent.totalFunding === 'string',
+        hasRecentRoundAmount: typeof parsedContent.recentRoundAmount === 'string',
+        hasRecentRoundDate: typeof parsedContent.recentRoundDate === 'string',
+        hasRecentRoundType: typeof parsedContent.recentRoundType === 'string',
+        hasNotableInvestors: Array.isArray(parsedContent.notableInvestors),
+        hasSources: Array.isArray(parsedContent.sources)
+      });
       throw new Error('Invalid or incomplete data received');
     }
 
