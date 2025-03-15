@@ -17,6 +17,13 @@ export interface ChromeMessage {
   | 'STREAM_COMPLETE'
   | 'STREAM_ERROR';
 
+  export interface StreamingState {
+    status: 'idle' | 'loading' | 'streaming' | 'processing' | 'complete' | 'error';
+    message: string;
+    progress: number;
+    data: CompanyData | null;
+  }
+
   export interface StreamMessage {
     type: StreamMessageType;
     message?: string;

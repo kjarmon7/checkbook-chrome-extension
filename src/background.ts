@@ -1,230 +1,68 @@
-import { ChromeMessage, CompanyData, PerplexityResponse } from './types';
+import { CompanyData, StreamingState } from './types';
 import { config } from './config/env';
 
-// Listen for connection from popup
-chrome.runtime.onConnect.addListener((port: chrome.runtime.Port ) => {
-  console.log('Connection received with name:', port.name);
+// Store active connections
+let ports: Map<string, chrome.runtime.Port> = new Map();
 
-  if (port.name === 'company-data-stream') {
-    console.log('Setting up message listener for streaming connection');
-    
-    // Listen for messages from this port
-    port.onMessage.addListener((message: ChromeMessage) => {
-      console.log('Received message on port:', message);
-      if (message.type === 'FETCH_COMPANY_DATA') {
-        console.log('Starting fetchCompanyDataStreaming...');
-        fetchCompanyDataStreaming(message.domain, port);
-      }
-    });
-      
-    // Remove the port when disconnected
-    port.onDisconnect.addListener(() => {
-      console.log('Port disconnected for tab');
-    });
-  }
-});
-
-  // Also keep the old message handler for backward compatibility
+// Message listener for one-time requests
 chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
   if (request.type === 'FETCH_COMPANY_DATA') {
-    fetchCompanyData(request.domain)
+    fetchCompanyDataStreaming(request.domain, request.connectionId)
       .then(data => sendResponse({ data }))
       .catch(error => sendResponse({ error: error.message }));
     return true;
   }
+  return false;
 });
 
-async function fetchCompanyDataStreaming(domain: string, port: chrome.runtime.Port): Promise<void> {
-  console.log('Streaming company data for domain:', domain);
-  try {
-    const companyName = extractCompanyName(domain);
-    console.log('Extracted company name:', companyName);
+// Connection listener for streaming connections
+chrome.runtime.onConnect.addListener((port) => {
+  console.log(`Connection established with: ${port.name}`);
+  
+  if (port.name.startsWith('company-data-stream:')) {
+    const connectionId = port.name.split(':')[1];
+    ports.set(connectionId, port);
     
-    // Notify the client that streaming has started
-    port.postMessage({ type: 'STREAM_START', message: 'Fetching company data...' });
-    console.log('Send STREAM_START message');
-
-    console.log('Making API request...');
-    const response = await fetch('https://api.perplexity.ai/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${config.PERPLEXITY_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: "sonar",
-        messages: [{
-          role: "system",
-          content: "You are a helpful assistant that provides company funding information. Please respond with structured information about funding rounds, investors, and sources. Format your response as a JSON object."
-        }, {
-          role: "user",
-          content: `Please provide the following information about ${companyName} in JSON format:
-            - Total funding amount
-            - Most recent funding round (amount, date, and type)
-            - Notable investors
-            - Sources of information
-            
-            EXTREMELY IMPORTANT: Your response must ONLY contain the JSON object and absolutely nothing else - no markdown formatting (like \`\`\`json), no explanations, no additional text. Return ONLY a raw JSON object with these exact keys:
-            {
-              "companyName": string,
-              "totalFunding": string,
-              "recentRoundAmount": string,
-              "recentRoundDate": string,
-              "recentRoundType": string,
-              "notableInvestors": string[],
-              "sources": string[]
-            }`
-        }],
-        stream: true  // Enable streaming
-      })
+    // Clean up when port disconnects
+    port.onDisconnect.addListener(() => {
+      console.log(`Connection closed: ${port.name}`);
+      ports.delete(connectionId);
     });
+  }
+});
 
-    console.log('API response received, status:', response.status);
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.log('API response not ok:', response.status, errorText);
-      port.postMessage({ 
-        type: 'STREAM_ERROR', 
-        error: `Failed to fetch company data: ${response.status} ${errorText}` 
-      });
-      return;
-    }
-
-    // Process the stream
-    const reader = response.body?.getReader();
-    if (!reader) {
-      console.error('Could not create stream reader');
-      port.postMessage({ 
-        type: 'STREAM_ERROR', 
-        error: 'Stream reader could not be created' 
-      });
-      return;
-    }
-
-    console.log('Stream reader created, starting to reach chunks...');
-    // To accumulate the JSON response
-    let accumulatedJSON = '';
-    
-    // Process the stream
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        console.log('Stream reading completed');
-        break;
-      }
-
-      // Convert the chunk to text
-      const chunk = new TextDecoder().decode(value);
-      console.log('Received chunk of length:', chunk.length);
-      console.log('Chunk sample:', chunk.substring(0, 100));
-      
-      // Send the raw chunk to the client
-      port.postMessage({ 
-        type: 'STREAM_CHUNK', 
-        chunk 
-      });
-
-      // Process each line (Perplexity sends "data: {json}" lines)
-      const lines = chunk.split('\n').filter(line => line.trim() !== '');
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          // Skip the "data: " prefix
-          const data = line.substring(6);
-          
-          // Skip "[DONE]" marker
-          if (data === '[DONE]') continue;
-          
-          try {
-            const parsed = JSON.parse(data);
-            // Extract the content, if available
-            const content = parsed.choices?.[0]?.delta?.content;
-            if (content) {
-              accumulatedJSON += content;
-              
-              // Attempt to parse the accumulated JSON as we receive it
-              try {
-                // Check if we have a complete JSON object by looking for opening and closing braces
-                if (accumulatedJSON.trim().startsWith('{') && accumulatedJSON.trim().endsWith('}')) {
-                  const parsedObject = JSON.parse(accumulatedJSON);
-                  
-                  // If we have a parseable object, validate it
-                  if (validatePartialPerplexityResponse(parsedObject)) {
-                    // Send progressive updates to the client
-                    port.postMessage({ 
-                      type: 'STREAM_UPDATE', 
-                      data: transformToCompanyData(parsedObject)
-                    });
-                  }
-                }
-              } catch (parseError) {
-                // It's normal that we can't parse until we have the complete JSON
-                // Just continue accumulating
-              }
-            }
-          } catch (e) {
-            console.error('Error parsing JSON chunk:', e);
-          }
-        }
-      }
-    }
-
-    // Final processing once stream is complete
-    try {
-      // Clean up the accumulated JSON (remove any markdown formatting if present)
-      let finalJSON = accumulatedJSON;
-      if (finalJSON.includes('```json')) {
-        const match = finalJSON.match(/```json\n([\s\S]+)\n```/);
-        if (match && match[1]) {
-          finalJSON = match[1].trim();
-        }
-      }
-      
-      // Try to find a valid JSON object
-      if (!finalJSON.startsWith('{')) {
-        const match = finalJSON.match(/{[\s\S]+}/);
-        if (match) {
-          finalJSON = match[0];
-        }
-      }
-      
-      const parsedContent = JSON.parse(finalJSON);
-      
-      if (!validatePerplexityResponse(parsedContent)) {
-        throw new Error('Invalid or incomplete data received');
-      }
-      
-      const companyData = transformToCompanyData(parsedContent);
-      
-      // Send the final complete data
-      port.postMessage({ 
-        type: 'STREAM_COMPLETE', 
-        data: companyData 
-      });
-      
-    } catch (error) {
-      console.error('Error processing final JSON:', error);
-      port.postMessage({ 
-        type: 'STREAM_ERROR', 
-        error: error instanceof Error ? error.message : 'Failed to process response' 
-      });
-    }
-    
-  } catch (error) {
-    console.error('Error in fetchCompanyDataStreaming:', error);
-    port.postMessage({ 
-      type: 'STREAM_ERROR', 
-      error: error instanceof Error ? error.message : 'Unknown error occurred' 
-    });
+// Send streaming updates to connected client
+function sendStreamUpdate(connectionId: string, state: StreamingState) {
+  const port = ports.get(connectionId);
+  if (port) {
+    port.postMessage({ type: 'STREAM_UPDATE', state });
+  } else {
+    console.warn(`Port not found for connectionId: ${connectionId}`);
   }
 }
 
-// Original non-streaming function preserved for backward compatibility
-async function fetchCompanyData(domain: string): Promise<CompanyData> {
-  console.log('Fetching company data for domain:', domain);
+async function fetchCompanyDataStreaming(domain: string, connectionId: string): Promise<CompanyData> {
+  console.log(`Fetching company data for domain: ${domain}, connectionId: ${connectionId}`);
+  
   try {
+    // Update state to indicate streaming is starting
+    sendStreamUpdate(connectionId, {
+      status: 'loading',
+      message: 'Connecting to API...',
+      progress: 0,
+      data: null
+    });
+
     const companyName = extractCompanyName(domain);
     console.log('Extracted company name:', companyName);
+    
+    sendStreamUpdate(connectionId, {
+      status: 'loading',
+      message: `Fetching data for ${companyName}...`,
+      progress: 10,
+      data: null
+    });
+
     const response = await fetch('https://api.perplexity.ai/chat/completions', {
       method: 'POST',
       headers: {
@@ -233,9 +71,10 @@ async function fetchCompanyData(domain: string): Promise<CompanyData> {
       },
       body: JSON.stringify({
         model: "sonar",
+        stream: true,
         messages: [{
           role: "system",
-          content: "You are a helpful assistant that provides company funding information. Please respond with structured information about funding rounds, investors, and sources. Format your response as a JSON object."
+          content: "You are a helpful assistant that provides the MOST CURRENT company funding information. Always prioritize the most recent data sources. Never return outdated information."
         }, {
           role: "user",
           content: `Please provide the following information about ${companyName} in JSON format:
@@ -258,143 +97,232 @@ async function fetchCompanyData(domain: string): Promise<CompanyData> {
       })
     });
 
-    console.log('API request sent, awaiting response...');
     if (!response.ok) {
-        const errorText = await response.text();
-        console.log('API response not ok:', response.status, errorText)
-        throw new Error(`Failed to fetch company data: ${response.status} ${errorText}`);
+      const errorText = await response.text();
+      console.error('API response not ok:', response.status, errorText);
+      sendStreamUpdate(connectionId, {
+        status: 'error',
+        message: `API error: ${response.status} - ${errorText}`,
+        progress: 0,
+        data: null
+      });
+      throw new Error(`Failed to fetch company data: ${response.status} ${errorText}`);
     }
 
-    const perplexityResponse = await response.json();
-    console.log('Raw API Response:', perplexityResponse);
-
-    if (!perplexityResponse.choices?.[0]?.message?.content) {
-        console.error('Unexpected API response structure:', perplexityResponse);
-        throw new Error ('Unexpected API response structure');
+    if (!response.body) {
+      sendStreamUpdate(connectionId, {
+        status: 'error',
+        message: 'Response body is null',
+        progress: 0,
+        data: null
+      });
+      throw new Error('Response body is null');
     }
+
+    // Start streaming process
+    sendStreamUpdate(connectionId, {
+      status: 'streaming',
+      message: 'Receiving data...',
+      progress: 20,
+      data: null
+    });
+
+    const reader = response.body.getReader();
+    let responseContent = '';
+    let accumulatedJSON = '';
+    let contentProgress = 0;
+    let partialData: Partial<CompanyData> = {
+      name: companyName,
+      totalFunding: '',
+      recentRound: {
+        amount: '',
+        date: '',
+        type: ''
+      },
+      notableInvestors: [],
+      sources: []
+    };
     
-    const responseContent = perplexityResponse.choices[0].message.content;
-    console.log('Response content:', responseContent);
+    try {
+      // Process the stream
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) {
+          console.log('Stream reading completed');
+          break;
+        }
 
-    // The Perplexity response will be in perplexityResponse.choices[0].message.content
-    // This contains a string that should be valid JSON
-    let parsedContent: PerplexityResponse | null = null;
-    let parseSuccess = false;
+        // Convert the chunk to a string
+        const chunk = new TextDecoder().decode(value);
+        contentProgress += chunk.length;
+        
+        console.log('Received chunk of length:', chunk.length);
+        
+        // Store the raw response for debugging
+        responseContent += chunk;
+        
+        // Process each data line in the chunk
+        const lines = chunk.split('\n');
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = line.substring(6).trim();
+            if (data === '[DONE]') continue;
+            
+            try {
+              const parsed = JSON.parse(data);
+              if (parsed.choices && parsed.choices[0]?.delta?.content) {
+                // Add the content to our accumulated JSON
+                const content = parsed.choices[0].delta.content;
+                accumulatedJSON += content;
+
+                // Try to extract partial JSON as we accumulate more content
+                try {
+                  // Look for complete JSON objects
+                  const jsonMatch = accumulatedJSON.match(/{[^]*}/);
+                  
+                  if (jsonMatch) {
+                    // Try parsing it
+                    try {
+                      const partialParsed = JSON.parse(jsonMatch[0]);
+  
+                      // Update partial data with what we have
+                      if (partialParsed.companyName) partialData.name = partialParsed.companyName;
+                      if (partialParsed.totalFunding) partialData.totalFunding = partialParsed.totalFunding;
+                      if (partialParsed.recentRoundAmount && partialData.recentRound) partialData.recentRound.amount = partialParsed.recentRoundAmount;
+                      if (partialParsed.recentRoundDate && partialData.recentRound) partialData.recentRound.date = partialParsed.recentRoundDate;
+                      if (partialParsed.recentRoundType && partialData.recentRound) partialData.recentRound.type = partialParsed.recentRoundType;
+                      if (partialParsed.notableInvestors) partialData.notableInvestors = partialParsed.notableInvestors;
+                      if (partialParsed.sources) partialData.sources = partialParsed.sources;
+
+                      // Calculate progress (this is approximate)
+                      const progress = 20 + Math.min(70, contentProgress / 1000);
+                      
+                      sendStreamUpdate(connectionId, {
+                        status: 'streaming',
+                        message: 'Receiving company data...',
+                        progress: progress,
+                        data: partialData as CompanyData
+                      });
+                    } catch (err) {
+                      // This is normal - we're dealing with incomplete JSON
+                    }
+                  }
+                } catch (jsonErr) {
+                  // Ignore errors during partial parsing
+                }
+              }
+            } catch (err) {
+              console.warn('Error parsing data line:', err);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error reading stream:', error);
+      sendStreamUpdate(connectionId, {
+        status: 'error',
+        message: `Stream error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        progress: 0,
+        data: null
+      });
+      throw error;
+    } finally {
+      reader.releaseLock();
+    }
+
+    sendStreamUpdate(connectionId, {
+      status: 'processing',
+      message: 'Processing company data...',
+      progress: 90,
+      data: partialData as CompanyData
+    });
+
+    console.log('Full streamed content:', responseContent);
+    console.log('Accumulated JSON:', accumulatedJSON);
+
+    // Try to parse accumulated JSON
+    let finalData: CompanyData;
 
     try {
-      parsedContent = JSON.parse(responseContent);
-      parseSuccess = true;
-      console.log('Direct parsing suceeded!');
+      // Try to parse the accumulated JSON directly
+      const parsedContent = JSON.parse(accumulatedJSON);
+
+      finalData = {
+        name: parsedContent.companyName || companyName,
+        totalFunding: parsedContent.totalFunding || 'Unknown',
+        recentRound: {
+          amount: parsedContent.recentRoundAmount || 'Unknown',
+          date: parsedContent.recentRoundDate || 'Unknown',
+          type: parsedContent.recentRoundType || 'Unknown'
+        },
+        notableInvestors: parsedContent.notableInvestors || ['Unknown'],
+        sources: parsedContent.sources || ['Unknown']
+      };
     } catch (error) {
-      console.error('Failed to parse response directly:', error);
-      console.log('Attempting to extract JSON from markdown or text...');
+      console.error('Failed to parse accumulated JSON, falling back to regex extraction:', error);
 
-      //Try to extract JSON between code block markers
-      let jsonMatch = responseContent.match(/```json\n([\s\S]+)\n```/);
+      // If direct parsing fails, try to extract JSON with regex
+      const jsonMatch = accumulatedJSON.match(/{[^]*}/);
 
-      if (jsonMatch && jsonMatch[1]) {
-        // Found JSON in code block
-        const extractedJson = jsonMatch[1].trim();
-        console.log('Extracted JSON from code block:', extractedJson);  
-
+      if (jsonMatch) {
         try {
-          parsedContent = JSON.parse(extractedJson);
-          parseSuccess = true;
-          console.log('Successfully parsed extracted JSON from code block'); 
-        } catch (extractError) {
-          console.error('Failed to parse JSON from code block:', extractError);
+          const extractedJson = jsonMatch[0];
+          const parsedJson = JSON.parse(extractedJson);
+
+          finalData = {
+            name: parsedJson.companyName || companyName,
+            totalFunding: parsedJson.totalFunding || 'Unknown',
+            recentRound: {
+              amount: parsedJson.recentRoundAmount || 'Unknown',
+              date: parsedJson.recentRoundDate || 'Unknown',
+              type: parsedJson.recentRoundType || 'Unknown'
+            },
+            notableInvestors: parsedJson.notableInvestors || ['Unknown'],
+            sources: parsedJson.sources || ['Unknown']
+          };
+        } catch (regexError) {
+          console.error('Failed to parse with regex extraction, using partial data:', regexError);
+          finalData = partialData as CompanyData;
         }
-      }
-          
-      if (!parseSuccess) {
-        // Try to find anything that looks like a JSON object with curly braces
-        jsonMatch = responseContent.match(/{([\s\S]+)}/);
-        if (jsonMatch) { 
-          try { 
-            console.log('Attempting to parse JSON with just braces:', jsonMatch[0]);
-            parsedContent = JSON.parse(jsonMatch[0]);
-            parseSuccess = true;
-            console.log('Successfully parsed JSON with braces extraction');
-          } catch (lastError) {
-            console.error('All parsing attempts failed:', lastError);
-            throw new Error('Invalid response format from API - exhausted all parsing options');
-          }
-        } else {
-          throw new Error('Invalid response format from API - no valid JSON structure found');
-        }
+      } else {
+        // As a last resort, use the partial data we've collected
+        finalData = partialData as CompanyData;
       }
     }
 
-    if (!parseSuccess || !parsedContent) {
-      throw new Error('Failed to parse response from API');
-    }
+    sendStreamUpdate(connectionId, {
+      status: 'complete',
+      message: 'Company data retrieved successfully',
+      progress: 100,
+      data: finalData
+    });
 
-    // Log validation results
-    const validationResult = validatePerplexityResponse(parsedContent);
-    console.log('Validation result:', validationResult);
-    if (!validationResult) {
-      console.error('Failed validation. Missing or invalid fields:', {
-        hasCompanyName: typeof parsedContent.companyName === 'string',
-        hasTotalFunding: typeof parsedContent.totalFunding === 'string',
-        hasRecentRoundAmount: typeof parsedContent.recentRoundAmount === 'string',
-        hasRecentRoundDate: typeof parsedContent.recentRoundDate === 'string',
-        hasRecentRoundType: typeof parsedContent.recentRoundType === 'string',
-        hasNotableInvestors: Array.isArray(parsedContent.notableInvestors),
-        hasSources: Array.isArray(parsedContent.sources)
-      });
-      throw new Error('Invalid or incomplete data received');
-    }
-
-    return transformToCompanyData(parsedContent);
+    return finalData;
   } catch (error) {
     console.error('Error in fetchCompanyData:', error);
+    sendStreamUpdate(connectionId, {
+      status: 'error',
+      message: error instanceof Error ? error.message : 'Unknown error occurred',
+      progress: 0,
+      data: null
+    });
     throw new Error(error instanceof Error ? error.message : 'Unknown error occurred');
   }
 }
 
-// Helper to transform API response to CompanyData
-function transformToCompanyData(parsedContent: PerplexityResponse): CompanyData {
-  return {
-    name: parsedContent.companyName,
-    totalFunding: parsedContent.totalFunding,
-    recentRound: {
-      amount: parsedContent.recentRoundAmount,
-      date: parsedContent.recentRoundDate,
-      type: parsedContent.recentRoundType
-    },
-    notableInvestors: parsedContent.notableInvestors || [],
-    sources: parsedContent.sources || []
-  };
-}
-
-function validatePerplexityResponse(response: any): response is PerplexityResponse {
-  return (
-    typeof response === 'object' &&
-    typeof response.companyName === 'string' &&
-    typeof response.totalFunding === 'string' &&
-    typeof response.recentRoundAmount === 'string' &&
-    typeof response.recentRoundDate === 'string' &&
-    typeof response.recentRoundType === 'string' &&
-    Array.isArray(response.notableInvestors) &&
-    Array.isArray(response.sources)
-  );
-}
-
-// For streaming, we need to validate partial responses
-function validatePartialPerplexityResponse(response: any): boolean {
-  return (
-    typeof response === 'object' &&
-    (!('companyName' in response) || typeof response.companyName === 'string') &&
-    (!('totalFunding' in response) || typeof response.totalFunding === 'string') &&
-    (!('recentRoundAmount' in response) || typeof response.recentRoundAmount === 'string') &&
-    (!('recentRoundDate' in response) || typeof response.recentRoundDate === 'string') &&
-    (!('recentRoundType' in response) || typeof response.recentRoundType === 'string') &&
-    (!('notableInvestors' in response) || Array.isArray(response.notableInvestors)) &&
-    (!('sources' in response) || Array.isArray(response.sources))
-  );
-}
-
 function extractCompanyName(domain: string): string {
-  return domain.replace('www.', '').split('.')[0];
+  // Improve company name extraction
+  let name = domain.replace(/^www\./, '').split('.')[0];
+  
+  // Convert names like "company-name" to "Company Name"
+  if (name.includes('-')) {
+    name = name.split('-')
+      .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(' ');
+  } else {
+    // Capitalize the first letter
+    name = name.charAt(0).toUpperCase() + name.slice(1);
+  }
+  
+  return name;
 }
-

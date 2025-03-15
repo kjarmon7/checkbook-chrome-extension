@@ -1,193 +1,159 @@
 import "../global.css";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { CompanyName } from "../../components/CompanyName";
 import { TotalFunding } from "../../components/TotalFunding";
 import { RecentRound } from "../../components/RecentRound";
 import { NotableInvestors } from "../../components/NotableInvestors";
 import { Sources } from "../../components/Sources";
-import { CompanyData } from "../../types";
-import { StreamMessage } from "../../types";
+import { CompanyData, StreamingState } from "../../types";
+import { LoadingIndicator } from "../../components/LoadingIndicator";
 
 export const Popup: React.FC = () => {
-  const [companyData, setCompanyData] = useState<Partial<CompanyData> | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
+  const [streamingState, setStreamingState] = useState<StreamingState>({
+    status: 'idle',
+    message: 'Ready to fetch data',
+    progress: 0,
+    data: null
+  });
+  const [connectionId, setConnectionId] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
-  const [streamingStatus, setStreamingStatus] = useState<string | null>(null);
-  
-  // Store port connection in a ref to maintain it across renders
-  const portRef = useRef<chrome.runtime.Port | null>(null);
-
-  // Clean up the port connection when component unmounts
-  useEffect(() => {
-    return () => {
-      if (portRef.current) {
-        portRef.current.disconnect();
-      }
-    };
-  }, []);
 
   useEffect(() => {
-    const getCurrentTab = async () => {
-      try {
-        console.log('Getting current tab...');
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (!tab.url) throw new Error('No URL found');
+    // Generate a unique connection ID for this popup instance
+    const newConnectionId = `popup-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    setConnectionId(newConnectionId);
+
+    // Connect to the background script
+    const port = chrome.runtime.connect({ name: `company-data-stream:${newConnectionId}` });
+    
+    // Listen for stream updates
+    port.onMessage.addListener((message) => {
+      if (message.type === 'STREAM_UPDATE') {
+        console.log('Stream update received:', message);
+        setStreamingState(message.state);
         
-        const url = new URL(tab.url);
-        const domain = url.hostname;
-
-        // Try streaming API first
-        if (chrome.runtime && chrome.runtime.connect) {
-          try {
-            console.log('Establishing port connection...');
-            // Create a connection to the background script
-            const port = chrome.runtime.connect({ name: 'company-data-stream' });
-            portRef.current = port;
-            
-            // Set up message handler
-            port.onMessage.addListener((message: StreamMessage) => {
-              console.log('Received message:', message);
-              switch (message.type) {
-                case 'STREAM_START':
-                  setStreamingStatus('Streaming started...');
-                  break;
-                
-                case 'STREAM_CHUNK':
-                  // You can optionally show the raw chunks for debugging
-                  // setStreamingStatus(prev => `${prev}\n${message.chunk}`);
-                  break;
-                
-                case 'STREAM_UPDATE':
-                  if (message.data) {
-                    setCompanyData(prevData => ({
-                      ...prevData,
-                      ...message.data
-                    }));
-                    setStreamingStatus('Receiving data...');
-                  }
-                  break;
-                
-                case 'STREAM_COMPLETE':
-                  if (message.data) {
-                    setCompanyData(message.data);
-                  }
-                  setLoading(false);
-                  setStreamingStatus(null);
-                  break;
-                
-                case 'STREAM_ERROR':
-                  setError(message.error || 'An error occurred during streaming');
-                  setLoading(false);
-                  setStreamingStatus(null);
-                  break;
-              }
-            });
-            
-            // Request data through the port
-            console.log('Sending FETCH_COMPANY_DATA message...');
-            port.postMessage({ type: 'FETCH_COMPANY_DATA', domain });
-            
-            // Handle disconnect
-            port.onDisconnect.addListener(() => {
-              const error = chrome.runtime.lastError;
-              if (error) {
-                console.error('Port disconnected due to error:', error);
-                setError('Connection to background script lost');
-                setLoading(false);
-                fallbackToNonStreaming(domain);
-              }
-            });
-          } catch (err) {
-            console.error('Streaming connection failed:', err);
-            fallbackToNonStreaming(domain);
-          }
+        // Update error state if there's an error
+        if (message.state.status === 'error') {
+          setError(message.state.message);
         } else {
-          // Streaming not supported, fall back to non-streaming
-          fallbackToNonStreaming(domain);
+          setError(null);
         }
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Unknown error occurred');
-        setLoading(false);
       }
+    });
+    
+    // Clean up connection when component unmounts
+    return () => {
+      port.disconnect();
     };
-
-    // Fallback method using the old message passing
-    const fallbackToNonStreaming = (domain: string) => {
-      setStreamingStatus('Falling back to standard request...');
-      
-      // Send message to background script
-      chrome.runtime.sendMessage(
-        { type: 'FETCH_COMPANY_DATA', domain },
-        (response) => {
-          if (response.error) {
-            setError(response.error);
-          } else {
-            setCompanyData(response.data);
-          }
-          setLoading(false);
-          setStreamingStatus(null);
-        }
-      );
-    };
-
-    getCurrentTab();
   }, []);
 
-  if (loading) {
+  useEffect(() => {
+    // Only fetch data if we have a valid connection ID
+    if (connectionId) {
+      const getCurrentTab = async () => {
+        try {
+          const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+          if (!tab.url) throw new Error('No URL found');
+          
+          const url = new URL(tab.url);
+          const domain = url.hostname;
+
+          // Send message to background script to start fetching
+          chrome.runtime.sendMessage(
+            { 
+              type: 'FETCH_COMPANY_DATA', 
+              domain,
+              connectionId 
+            },
+            (response) => {
+              if (response?.error) {
+                setError(response.error);
+              }
+            }
+          );
+        } catch (err) {
+          setError(err instanceof Error ? err.message : 'Unknown error occurred');
+        }
+      };
+
+      getCurrentTab();
+    }
+  }, [connectionId]);
+
+  // Determine what to render based on streaming state
+  const renderContent = () => {
+    const { status, message, progress, data } = streamingState;
+    
+    if (error) {
+      return <div className="p-4 text-red-500">Error: {error}</div>;
+    }
+
+    if (status === 'idle' || status === 'loading' || status === 'streaming') {
+      return (
+        <div className="flex flex-col items-center justify-center p-6 gap-4">
+          <LoadingIndicator progress={progress} />
+          <div className="text-sm text-center">{message}</div>
+          {data && renderPartialData(data)}
+        </div>
+      );
+    }
+    
+    if (status === 'complete' && data) {
+      return renderCompanyData(data);
+    }
+    
+    return <div className="p-4">Waiting for data...</div>;
+  };
+
+  // Render partial data during streaming
+  const renderPartialData = (data: CompanyData) => {
     return (
-      <div className="p-4">
-        <div className="animate-pulse">Loading company data...</div>
-        {streamingStatus && (
-          <div className="text-sm text-gray-500 mt-2">{streamingStatus}</div>
-        )}
-      </div>
-    );
-  }
-
-  if (error) {
-    return <div className="p-4 text-red-500">Error: {error}</div>;
-  }
-
-  if (!companyData) {
-    return <div className="p-4">No company data found</div>;
-  }
-
-  // Check if we have complete data
-  const isComplete = 
-    companyData.name && 
-    companyData.totalFunding && 
-    companyData.recentRound && 
-    companyData.notableInvestors && 
-    companyData.sources;
-
-  return (
-    <div className="bg-white w-[400px] h-[500px] overflow-y-auto">
-      <div className="flex flex-col gap-6 p-6">
-        {companyData.name && <CompanyName name={companyData.name} />}
+      <div className="w-full mt-4 animate-pulse">
+        {data.name && <CompanyName name={data.name} />}
         
-        {companyData.totalFunding && (
-          <TotalFunding amount={companyData.totalFunding} />
+        {data.totalFunding && (
+          <div className="mt-4">
+            <TotalFunding amount={data.totalFunding} />
+          </div>
         )}
         
-        {companyData.recentRound && (
-          <RecentRound data={companyData.recentRound} />
+        {data.recentRound.type && (
+          <div className="mt-4">
+            <RecentRound data={data.recentRound} />
+          </div>
         )}
         
-        {companyData.notableInvestors && (
-          <NotableInvestors investors={companyData.notableInvestors} />
+        {data.notableInvestors.length > 0 && (
+          <div className="mt-4">
+            <NotableInvestors investors={data.notableInvestors} />
+          </div>
         )}
         
-        {companyData.sources && (
-          <Sources sources={companyData.sources} />
-        )}
-        
-        {!isComplete && loading && (
-          <div className="text-center text-sm text-gray-500">
-            {streamingStatus || "Loading remaining data..."}
+        {data.sources.length > 0 && (
+          <div className="mt-4">
+            <Sources sources={data.sources} />
           </div>
         )}
       </div>
+    );
+  };
+
+  // Render complete company data
+  const renderCompanyData = (data: CompanyData) => {
+    return (
+      <div className="flex flex-col gap-6 p-6">
+        <CompanyName name={data.name} />
+        <TotalFunding amount={data.totalFunding} />
+        <RecentRound data={data.recentRound} />
+        <NotableInvestors investors={data.notableInvestors} />
+        <Sources sources={data.sources} />
+      </div>
+    );
+  };
+
+  return (
+    <div className="bg-white w-[400px] h-[500px] overflow-y-auto">
+      {renderContent()}
     </div>
   );
 };
-
