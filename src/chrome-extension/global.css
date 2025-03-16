@@ -1,12 +1,28 @@
 @import "tailwindcss";
 
-/* * {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-} */
-
 html {
   min-height: 100%;
   position: relative;
+}
+
+/* Typing animation styles */
+@keyframes blink {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+/* Typing cursor - can be added to any element that needs a typing effect */
+.typing-cursor::after {
+  content: '|';
+  animation: blink 1s step-end infinite;
+}
+
+/* Typing animation display */
+.typing-text {
+  display: inline-block;
+  white-space: pre-wrap;
 }
