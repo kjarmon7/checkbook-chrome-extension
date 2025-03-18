@@ -3,8 +3,10 @@ import { config } from './config/env';
 
 // Listen for streaming responses
 chrome.runtime.onConnect.addListener((port) => {
+  console.log('Connection established with port name:', port.name);
   if (port.name === 'streaming-response') {
     port.onMessage.addListener((request) => {
+      console.log('Received message:', request.type);
       if (request.type === 'FETCH_COMPANY_DATA') {
         streamCompanyData(request.domain, port);
       }
@@ -18,6 +20,7 @@ async function streamCompanyData(domain: string, port: chrome.runtime.Port) {
     const companyName = extractCompanyName(domain);
     console.log('Extracted company name:', companyName);
     
+    console.log('Making API request to Perplexity...');
     const response = await fetch('https://api.perplexity.ai/chat/completions', {
       method: 'POST',
       headers: {
@@ -57,10 +60,12 @@ EXTREMELY IMPORTANT:
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.log('API response not ok:', response.status, errorText);
+      console.error('API response not OK:', response.status, errorText);
       port.postMessage({ type: 'ERROR', error: `Failed to fetch company data: ${response.status} ${errorText}` });
       return;
     }
+    
+    console.log('API response received successfully');
 
     // Read the stream
     const reader = response.body?.getReader();
@@ -69,7 +74,11 @@ EXTREMELY IMPORTANT:
       return;
     }
 
+    // This will store the entire accumulated content for parsing
     let accumulatedContent = '';
+
+    
+    // This is for displaying progress during streaming
     const companyData: Partial<CompanyData> = {
       notableInvestors: [],
       sources: []
@@ -79,27 +88,23 @@ EXTREMELY IMPORTANT:
     while (true) {
       const { done, value } = await reader.read();
       if (done) {
-        console.log('Stream complete');
-        
-        // Final processing to ensure deduplication
-        if (companyData.notableInvestors && companyData.notableInvestors.length > 0) {
-          companyData.notableInvestors = deduplicateArray(companyData.notableInvestors);
-        }
-        
-        if (companyData.sources && companyData.sources.length > 0) {
-          companyData.sources = deduplicateArray(companyData.sources);
-        }
+        console.log('Stream complete, processing final data');
+        // Final processing of complete data
+        const completeParsedData = parseCompleteContent(accumulatedContent);
         
         // Send the complete result
-        if (Object.keys(companyData).length > 0) {
+        if (completeParsedData && Object.keys(completeParsedData).length > 0) {
+          console.log('Sending COMPLETE message with complete parsed data:', completeParsedData);
+          port.postMessage({ 
+            type: 'COMPLETE', 
+            data: completeParsedData as CompanyData 
+          });
+        } else {
+          console.log('Complete parsing failed, falling back to accumulated data:', companyData);
+          // Fallback to the accumulated partial data if we couldn't parse complete data
           port.postMessage({ 
             type: 'COMPLETE', 
             data: companyData as CompanyData 
-          });
-        } else {
-          port.postMessage({ 
-            type: 'ERROR', 
-            error: 'No data was extracted from the response' 
           });
         }
         break;
@@ -134,7 +139,7 @@ EXTREMELY IMPORTANT:
                 content: accumulatedContent 
               });
               
-              // Process the new content to extract any data
+              // Process the new content to extract any data - for streaming display only
               processLineBasedContent(accumulatedContent, companyData, port);
             }
           } catch (error) {
@@ -152,40 +157,91 @@ EXTREMELY IMPORTANT:
   }
 }
 
-// Helper function to deduplicate arrays with exact string matching
-function deduplicateArray(arr: string[]): string[] {
-  // Convert to lowercase for case-insensitive comparison
-  const seen = new Set<string>();
-  const result: string[] = [];
-  
-  for (const item of arr) {
-    // Clean the item - trim whitespace, normalize case
-    const cleanItem = item.trim();
+// This function parses the complete content after streaming is done
+// to ensure we have the most accurate data
+function parseCompleteContent(content: string): Partial<CompanyData> | null {
+  console.log('Parsing complete content with length:', content.length);
+  try {
+    // Initialize data object
+    const data: Partial<CompanyData> = {};
     
-    // Skip empty items
-    if (!cleanItem) continue;
+    // Process each line to extract data
+    const lines = content.split('\n').filter(line => line.trim() !== '');
+    console.log(`Found ${lines.length} non-empty lines in complete content`);
     
-    // Case insensitive deduplication
-    const lowerItem = cleanItem.toLowerCase();
-    
-    if (!seen.has(lowerItem)) {
-      seen.add(lowerItem);
-      result.push(cleanItem); // Add original case version
+    // Extract company name
+    const companyNameLine = lines.find(line => line.startsWith('COMPANY_NAME:'));
+    if (companyNameLine) {
+      data.name = companyNameLine.slice('COMPANY_NAME:'.length).trim();
     }
+    
+    // Extract total funding
+    const totalFundingLine = lines.find(line => line.startsWith('TOTAL_FUNDING:'));
+    if (totalFundingLine) {
+      data.totalFunding = totalFundingLine.slice('TOTAL_FUNDING:'.length).trim();
+    }
+    
+    // Extract recent round data
+    const recentRound: { amount: string; date: string; type: string } = { 
+      amount: '', 
+      date: '', 
+      type: '' 
+    };
+    
+    const recentRoundAmountLine = lines.find(line => line.startsWith('RECENT_ROUND_AMOUNT:'));
+    if (recentRoundAmountLine) {
+      recentRound.amount = recentRoundAmountLine.slice('RECENT_ROUND_AMOUNT:'.length).trim();
+    }
+    
+    const recentRoundDateLine = lines.find(line => line.startsWith('RECENT_ROUND_DATE:'));
+    if (recentRoundDateLine) {
+      recentRound.date = recentRoundDateLine.slice('RECENT_ROUND_DATE:'.length).trim();
+    }
+    
+    const recentRoundTypeLine = lines.find(line => line.startsWith('RECENT_ROUND_TYPE:'));
+    if (recentRoundTypeLine) {
+      recentRound.type = recentRoundTypeLine.slice('RECENT_ROUND_TYPE:'.length).trim();
+    }
+    
+    data.recentRound = recentRound;
+    
+    // Extract notable investors
+    const notableInvestorsLine = lines.find(line => line.startsWith('NOTABLE_INVESTORS:'));
+    if (notableInvestorsLine) {
+      const investorsText = notableInvestorsLine.slice('NOTABLE_INVESTORS:'.length).trim();
+      data.notableInvestors = investorsText
+        .split(/,\s*|\s+and\s+/)
+        .map(investor => investor.trim())
+        .filter(investor => investor !== '');
+    } else {
+      data.notableInvestors = [];
+    }
+    
+    // Extract sources
+    const sourcesLine = lines.find(line => line.startsWith('SOURCES:'));
+    if (sourcesLine) {
+      const sourcesText = sourcesLine.slice('SOURCES:'.length).trim();
+      data.sources = sourcesText
+        .split(/,\s*/)
+        .map(source => source.trim())
+        .filter(source => source !== '');
+    } else {
+      data.sources = [];
+    }
+    
+    console.log('Complete parsed data:', data);
+    return data;
+  } catch (error) {
+    console.error('Error parsing complete content:', error);
+    return null;
   }
-  
-  return result;
 }
 
-// Process the line-based content to extract structured data
+// Process the line-based content to extract structured data for streaming updates
 function processLineBasedContent(content: string, companyData: Partial<CompanyData>, port: chrome.runtime.Port) {
   // Process full lines only
   const lines = content.split('\n').filter(line => line.trim() !== '');
   let dataUpdated = false;
-  
-  // Use a flag to track if we need to deduplicate at the end
-  let shouldDeduplicateInvestors = false;
-  let shouldDeduplicateSources = false;
   
   for (const line of lines) {
     // Try to extract data from each line
@@ -229,8 +285,9 @@ function processLineBasedContent(content: string, companyData: Partial<CompanyDa
     }
     else if (line.startsWith('NOTABLE_INVESTORS:')) {
       const investorsText = line.slice('NOTABLE_INVESTORS:'.length).trim();
+      
       if (investorsText) {
-        // Split by commas, but handle cases with Oxford commas and 'and'
+        // Simple split by commas and 'and'
         const newInvestors = investorsText
           .split(/,\s*|\s+and\s+/)
           .map(investor => investor.trim())
@@ -238,68 +295,35 @@ function processLineBasedContent(content: string, companyData: Partial<CompanyDa
         
         // Only update if we have new investors
         if (newInvestors.length > 0) {
-          // Keep track of what we've already seen
-          if (!companyData.notableInvestors) {
-            companyData.notableInvestors = [];
-          }
-          
-          // Add only genuinely new investors
-          const existingLower = new Set(companyData.notableInvestors.map(i => i.toLowerCase()));
-          const actuallyNewInvestors = newInvestors.filter(
-            inv => !existingLower.has(inv.toLowerCase())
-          );
-          
-          if (actuallyNewInvestors.length > 0) {
-            companyData.notableInvestors = [...companyData.notableInvestors, ...actuallyNewInvestors];
-            shouldDeduplicateInvestors = true;
-            dataUpdated = true;
-          }
+          // Just replace the entire array - no deduplication
+          companyData.notableInvestors = newInvestors;
+          dataUpdated = true;
         }
       }
     }
     else if (line.startsWith('SOURCES:')) {
       const sourcesText = line.slice('SOURCES:'.length).trim();
+      
       if (sourcesText) {
-        // Split by commas
+        // Simple split by commas
         const newSources = sourcesText
           .split(/,\s*/)
           .map(source => source.trim())
-          .filter(source => source !== '' && source.includes('://'));
+          .filter(source => source !== '');
         
         // Only update if we have new sources
         if (newSources.length > 0) {
-          // Keep track of what we've already seen
-          if (!companyData.sources) {
-            companyData.sources = [];
-          }
-          
-          // Add only genuinely new sources
-          const existingLower = new Set(companyData.sources.map(s => s.toLowerCase()));
-          const actuallyNewSources = newSources.filter(
-            src => !existingLower.has(src.toLowerCase())
-          );
-          
-          if (actuallyNewSources.length > 0) {
-            companyData.sources = [...companyData.sources, ...actuallyNewSources];
-            shouldDeduplicateSources = true;
-            dataUpdated = true;
-          }
+          // Just replace the entire array - no deduplication
+          companyData.sources = newSources;
+          dataUpdated = true;
         }
       }
     }
   }
   
-  // Deduplicate arrays before sending update
-  if (shouldDeduplicateInvestors && companyData.notableInvestors) {
-    companyData.notableInvestors = deduplicateArray(companyData.notableInvestors);
-  }
-  
-  if (shouldDeduplicateSources && companyData.sources) {
-    companyData.sources = deduplicateArray(companyData.sources);
-  }
-  
   // If we've updated the data, send it to the popup
   if (dataUpdated) {
+    console.log('Sending PARTIAL update with data:', JSON.stringify(companyData, null, 2));
     port.postMessage({ 
       type: 'PARTIAL', 
       data: companyData 
