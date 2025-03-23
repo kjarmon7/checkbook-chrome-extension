@@ -7,7 +7,7 @@ export interface CompanyData {
   }
 
   export interface RecentRoundData {
-    amount: string;
-    date: string;
-    type: string;
+    amount?: string;
+    date?: string;
+    type?: string;
   }
