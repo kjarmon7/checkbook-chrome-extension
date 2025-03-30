@@ -7,7 +7,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     console.log('Processing FETCH_COMPANY_DATA request for domain:', request.domain);
     sendResponse({ status: 'fetching' });
     fetchCompanyDataStreaming(request.domain, sender.tab?.id);
-    return false;
+    return true; // Keep the message channel open for async response
   }
   return false;
 });
@@ -15,6 +15,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 function sendUpdate(data: Partial<CompanyData> | { error: string } | { complete: boolean }) {
   console.log('Sending update to popup:', data);
   chrome.runtime.sendMessage({ type: 'COMPANY_DATA_UPDATE', data });
+}
+
+function validateAndLogData(field: string, value: any) {
+  console.log(`Processing ${field}:`, value);
+  if (!value) {
+    console.warn(`Empty value received for ${field}`);
+    return false;
+  }
+  return true;
 }
 
 async function fetchCompanyDataStreaming(domain: string, _tabId?: number): Promise<void> {
@@ -25,12 +34,6 @@ async function fetchCompanyDataStreaming(domain: string, _tabId?: number): Promi
     
     sendUpdate({ name: companyName });
     
-    const controller = new AbortController();
-    const signal = controller.signal;
-    
-    console.log('Creating API request for Perplexity...');
-    console.log('API Key available:', !!config.PERPLEXITY_API_KEY);
-    
     // Check if API key is available
     if (!config.PERPLEXITY_API_KEY) {
       console.error('No Perplexity API key found in configuration!');
@@ -38,7 +41,7 @@ async function fetchCompanyDataStreaming(domain: string, _tabId?: number): Promi
       return;
     }
     
-    console.log('Preparing to send request to Perplexity API...');
+    console.log('Sending request to Perplexity API...');
     try {
       const response = await fetch('https://api.perplexity.ai/chat/completions', {
         method: 'POST',
@@ -46,59 +49,53 @@ async function fetchCompanyDataStreaming(domain: string, _tabId?: number): Promi
           'Authorization': `Bearer ${config.PERPLEXITY_API_KEY}`,
           'Content-Type': 'application/json',
         },
-        signal,
         body: JSON.stringify({
           model: "sonar",
           stream: true,
           messages: [{
             role: "system",
-            content: "You are a helpful assistant that provides company funding information. Please respond with structured information about funding rounds, investors, and sources."
+            content: "You are a precise data extraction assistant that only provides verified company funding information. Always respond in the exact format requested, with no additional text or explanations. Ensure all data is accurate and complete before including it."
           }, {
             role: "user",
-            content: `Please provide the following information about ${companyName}:
+            content: `Extract and provide verified funding information for ${companyName} using this exact format:
 
-Please use this exact format, with one field per line with FIELD_NAME: value format:
+COMPANY_NAME: [full legal company name - do not abbreviate, must be complete]
+TOTAL_FUNDING: [exact total funding amount with currency symbol, e.g. $100M, $1.2B]
+RECENT_ROUND_AMOUNT: [exact amount of most recent funding round with currency symbol]
+RECENT_ROUND_DATE: [date in MM/YYYY format]
+RECENT_ROUND_TYPE: [exact round type: Seed, Series A, Series B, etc.]
+NOTABLE_INVESTORS: [list exactly 5 most prominent investors, separated by semicolons]
+SOURCES: [list exactly 3 most authoritative sources with complete URLs]
 
-COMPANY_NAME: [company name]
-TOTAL_FUNDING: [most up-to-date total funding amount as of ${new Date().toISOString().split('T')[0]}]
-RECENT_ROUND_AMOUNT: [amount of most recent funding round]
-RECENT_ROUND_DATE: [date of most recent funding round]
-RECENT_ROUND_TYPE: [type of most recent funding round, e.g. Series A, Seed, etc.]
-NOTABLE_INVESTORS: [investor 1], [investor 2], [investor 3], etc.
-SOURCES: [full URL 1], [full URL 2], etc.
-
-EXTREMELY IMPORTANT: 
-1. Ensure all information is the most recent and up-to-date data available.
-2. For sources, provide complete URLs that can be clicked by users.
-3. Follow the exact format specified above with each field on its own line.
-4. Do not add any additional explanation or text.
-5. For NOTABLE_INVESTORS, list only 5-10 of the most significant investors without duplicates.
-6. For SOURCES, provide only 3-5 of the most relevant and authoritative sources without duplicates.`
+Critical Requirements:
+1. Only include information you are completely certain about
+2. Leave any uncertain fields completely blank
+3. For NOTABLE_INVESTORS, only include institutional investors or well-known angels
+4. For SOURCES, only use URLs from Crunchbase, TechCrunch, company press releases, or SEC filings
+5. Use semicolons (;) as separators for NOTABLE_INVESTORS and SOURCES
+6. Do not include any explanatory text or notes
+7. Verify all information is from within the last 2 years
+8. Company name must be the complete legal name, not abbreviated
+9. Total funding must include currency symbol and unit (M, B, K)
+10. All URLs must be complete and valid`
           }]
         })
       });
 
-      console.log('API request sent, starting to process stream...');
-      console.log('Response status:', response.status);
-      
       if (!response.ok) {
         const errorText = await response.text();
-        console.log('API response not ok:', response.status, errorText);
         sendUpdate({ error: `Failed to fetch company data: ${response.status} ${errorText}` });
         return;
       }
 
       if (!response.body) {
-        console.error('Response body is null');
         sendUpdate({ error: 'Response body is null' });
         return;
       }
 
-      console.log('Getting reader from response body...');
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       
-      console.log('Setting up company data and buffer...');
       let companyData: Partial<CompanyData> = {
         name: companyName,
         notableInvestors: [],
@@ -106,147 +103,162 @@ EXTREMELY IMPORTANT:
       };
       
       let buffer = "";
+      let accumulatedText = "";
       
       try {
-        console.log('Starting stream reading loop...');
-        let chunkCounter = 0;
-        
         while (true) {
-          console.log(`Reading chunk #${++chunkCounter}...`);
           const { done, value } = await reader.read();
           
           if (done) {
-            console.log('Stream reading complete (done=true)');
             break;
           }
           
-          console.log(`Received chunk #${chunkCounter} with ${value?.length || 0} bytes`);
           buffer += decoder.decode(value, { stream: true });
           
-          console.log(`Current buffer length: ${buffer.length} characters`);
-          console.log(`Buffer preview: ${buffer.substring(0, Math.min(50, buffer.length))}...`);
-          
-          let processedLines = 0;
+          // Process full lines
           while (buffer.includes('\n')) {
             const lineEnd = buffer.indexOf('\n');
             const line = buffer.substring(0, lineEnd).trim();
             buffer = buffer.substring(lineEnd + 1);
-            processedLines++;
             
             if (line.startsWith('data:')) {
-              console.log(`Processing data line: ${line.substring(0, Math.min(50, line.length))}...`);
               const jsonData = line.substring(5).trim();
               
               if (jsonData === '[DONE]') {
-                console.log('Received [DONE] signal from stream');
                 continue;
               }
               
               try {
                 const parsedData = JSON.parse(jsonData);
-                console.log('Successfully parsed JSON from stream');
-                
                 const content = parsedData.choices?.[0]?.delta?.content;
                 
                 if (content) {
-                  console.log(`Received content: "${content}"`);
-                  const lines = content.split('\n');
+                  accumulatedText += content;
                   
-                  for (const line of lines) {
-                    const trimmedLine = line.trim();
-                    if (!trimmedLine) continue;
-                    
-                    if (trimmedLine.includes(':')) {
-                      const [field, ...valueParts] = trimmedLine.split(':');
-                      const value = valueParts.join(':').trim();
+                  // Extract information from accumulated text
+                  const lines = accumulatedText.split('\n');
+                  for (const textLine of lines) {
+                    if (textLine.includes(':')) {
+                      const colonIndex = textLine.indexOf(':');
+                      const field = textLine.substring(0, colonIndex).trim().toUpperCase();
+                      const value = textLine.substring(colonIndex + 1).trim();
                       
-                      if (!value) continue;
+                      if (!value || value.includes('[') && value.includes(']')) {
+                        console.log(`Skipping invalid value for ${field}:`, value);
+                        continue;
+                      }
                       
-                      console.log(`Extracted field: ${field.trim()}, value: ${value}`);
+                      if (!validateAndLogData(field, value)) continue;
                       
-                      switch (field.trim().toUpperCase()) {
+                      switch (field) {
                         case 'COMPANY_NAME':
-                          if (!companyData.name || companyData.name === companyName) {
-                            companyData.name = value;
-                            console.log('Updating company name:', value);
-                            sendUpdate({ name: value });
+                          if (value) {
+                            // Validate and clean the company name
+                            const cleanedName = value
+                              // Remove any text within parentheses (including the parentheses)
+                              .replace(/\([^)]*\)/g, '')
+                              // Remove commas and any text after them
+                              .split(',')[0]
+                              // Replace multiple spaces with single space and trim
+                              .replace(/\s+/g, ' ').trim()
+                              // Capitalize first letter of each word
+                              .split(' ')
+                              .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+                              .join(' ');
+
+                            // Only update if we have a valid company name (more than 2 characters)
+                            if (cleanedName.length > 2) {
+                              companyData.name = cleanedName;
+                              sendUpdate({ name: cleanedName });
+                            }
                           }
                           break;
                           
                         case 'TOTAL_FUNDING':
-                          companyData.totalFunding = value;
-                          console.log('Updating total funding:', value);
-                          sendUpdate({ totalFunding: value });
+                          if (value) {
+                            // Validate funding format (e.g., $100M, $1.2B, etc.)
+                            const fundingRegex = /^\$[\d.]+[MBK]$/;
+                            if (fundingRegex.test(value)) {
+                              companyData.totalFunding = value;
+                              sendUpdate({ totalFunding: value });
+                            } else {
+                              console.log('Invalid funding format:', value);
+                            }
+                          }
                           break;
                           
                         case 'RECENT_ROUND_AMOUNT':
-                          companyData.recentRound = { 
-                            ...companyData.recentRound || {},
-                            amount: value
-                          };
-                          console.log('Updating recent round amount:', value);
-                          sendUpdate({ 
-                            recentRound: companyData.recentRound
-                          });
+                          if (value) {
+                            companyData.recentRound = { 
+                              ...companyData.recentRound || {},
+                              amount: value
+                            };
+                            sendUpdate({ recentRound: companyData.recentRound });
+                          }
                           break;
                           
                         case 'RECENT_ROUND_DATE':
-                          companyData.recentRound = { 
-                            ...companyData.recentRound || {},
-                            date: value
-                          };
-                          console.log('Updating recent round date:', value);
-                          sendUpdate({ 
-                            recentRound: companyData.recentRound
-                          });
+                          if (value) {
+                            companyData.recentRound = { 
+                              ...companyData.recentRound || {},
+                              date: value
+                            };
+                            sendUpdate({ recentRound: companyData.recentRound });
+                          }
                           break;
                           
                         case 'RECENT_ROUND_TYPE':
-                          companyData.recentRound = { 
-                            ...companyData.recentRound || {},
-                            type: value
-                          };
-                          console.log('Updating recent round type:', value);
-                          sendUpdate({ 
-                            recentRound: companyData.recentRound
-                          });
+                          if (value) {
+                            companyData.recentRound = { 
+                              ...companyData.recentRound || {},
+                              type: value
+                            };
+                            sendUpdate({ recentRound: companyData.recentRound });
+                          }
                           break;
                           
                         case 'NOTABLE_INVESTORS':
-                          const investors = value.split(',')
-                            .map((inv: string) => inv.trim())
-                            .filter((inv: string) => inv && inv !== '[investor 1]' && inv !== '[investor 2]' && inv !== '[investor 3]' && !inv.includes('['));
-                          
-                          console.log('Parsed investors:', investors);
-                          
-                          if (investors.length > 0) {
-                            const uniqueInvestors = [...new Set([
-                              ...(companyData.notableInvestors || []),
-                              ...investors
-                            ])];
+                          if (value && !value.includes('[')) {
+                            const investors = value.split(';')
+                              .map((inv) => inv.trim())
+                              .filter((inv) => inv && !inv.includes('[') && inv.length > 2);
                             
-                            companyData.notableInvestors = uniqueInvestors;
-                            console.log('Updating notable investors:', uniqueInvestors);
-                            sendUpdate({ notableInvestors: uniqueInvestors });
+                            if (investors.length > 0) {
+                              const uniqueInvestors = [...new Set(investors)].slice(0, 5);
+                              
+                              if (uniqueInvestors.length !== companyData.notableInvestors?.length || 
+                                  !uniqueInvestors.every(inv => companyData.notableInvestors?.includes(inv))) {
+                                companyData.notableInvestors = uniqueInvestors;
+                                sendUpdate({ notableInvestors: uniqueInvestors });
+                              }
+                            }
                           }
                           break;
                           
                         case 'SOURCES':
-                          const sources = value.split(',')
-                            .map((src: string) => src.trim())
-                            .filter((src: string) => src && src !== '[full URL 1]' && src !== '[full URL 2]' && !src.includes('['));
-                          
-                          console.log('Parsed sources:', sources);
-                          
-                          if (sources.length > 0) {
-                            const uniqueSources = [...new Set([
-                              ...(companyData.sources || []),
-                              ...sources
-                            ])];
+                          if (value && !value.includes('[')) {
+                            const sources = value.split(';')
+                              .map((src) => src.trim())
+                              .filter((src) => {
+                                // Basic URL validation
+                                try {
+                                  new URL(src);
+                                  return true;
+                                } catch {
+                                  return false;
+                                }
+                              });
                             
-                            companyData.sources = uniqueSources;
-                            console.log('Updating sources:', uniqueSources);
-                            sendUpdate({ sources: uniqueSources });
+                            if (sources.length > 0) {
+                              // Take only unique values and limit to 3
+                              const uniqueSources = [...new Set(sources)].slice(0, 3);
+                              
+                              // Only update if we have valid sources
+                              if (uniqueSources.length > 0) {
+                                companyData.sources = uniqueSources;
+                                sendUpdate({ sources: uniqueSources });
+                              }
+                            }
                           }
                           break;
                       }
@@ -255,28 +267,21 @@ EXTREMELY IMPORTANT:
                 }
               } catch (e) {
                 console.error('Error parsing stream JSON:', e);
-                console.log('Problematic JSON data:', jsonData);
               }
             }
           }
-          console.log(`Processed ${processedLines} lines from buffer`);
         }
       } catch (error) {
         console.error('Error reading stream:', error);
         sendUpdate({ error: `Error reading stream: ${error instanceof Error ? error.message : String(error)}` });
       } finally {
-        console.log('Stream processing complete, sending final updates');
-        console.log('Final company data:', companyData);
         sendUpdate(companyData);
         sendUpdate({ complete: true } as any);
-        console.log('All updates sent, streaming process complete');
       }
     } catch (fetchError) {
-      console.error('Fetch operation failed:', fetchError);
       sendUpdate({ error: `Fetch operation failed: ${fetchError instanceof Error ? fetchError.message : String(fetchError)}` });
     }
   } catch (error) {
-    console.error('Error in fetchCompanyDataStreaming:', error);
     sendUpdate({ error: error instanceof Error ? error.message : 'Unknown error occurred' });
   }
 }
