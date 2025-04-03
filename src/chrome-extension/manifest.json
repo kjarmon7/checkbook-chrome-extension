@@ -3,7 +3,7 @@
     "name": "Chrome Extension Starter",
     "version": "1.0.0",
     "action" : {
-      "default_popup": "popup.html"
+      "default_popup": "popup-local.html"
   },
   "options_page": "options.html",
   "description": "This is the description of your extension",

@@ -1,22 +1,17 @@
 import "../global.css";
-import { useState, useEffect } from "react";
-import { CompanyName } from "../../components/CompanyName";
-import { TotalFunding } from "../../components/TotalFunding";
-import { RecentRound } from "../../components/RecentRound";
-import { NotableInvestors } from "../../components/NotableInvestors";
-import { Sources } from "../../components/Sources";
-import { RecentRoundData } from "../../types";
+import React, { useState, useEffect } from "react";
+import { Receipt } from "../../components/Receipt";
+import { CompanyData } from "../../types/company";
+import "../../types/chrome";
+import { getChromeAPI } from "../../mocks/chrome";
 
 export const Popup: React.FC = () => {
-  const [companyName, setCompanyName] = useState<string | null>(null);
-  const [totalFunding, setTotalFunding] = useState<string | null>(null);
-  const [recentRound, setRecentRound] = useState<RecentRoundData | null>(null);
-  const [notableInvestors, setNotableInvestors] = useState<string[]>([]);
-  const [sources, setSources] = useState<string[]>([]);
+  const [receiptData, setReceiptData] = useState<Partial<CompanyData>>({});
   const [error, setError] = useState<string | null>(null);
   const [isComplete, setIsComplete] = useState<boolean>(false);
 
   useEffect(() => {
+    const chromeAPI = getChromeAPI();
     const messageListener = (message: {type: string, data: any}) => {
       if (message.type === 'COMPANY_DATA_UPDATE') {
         const data = message.data;
@@ -32,32 +27,43 @@ export const Popup: React.FC = () => {
         }
                 
         if ('name' in data) {
-          setCompanyName(data.name);
+          setReceiptData(prev => ({ ...prev, name: data.name }));
         }
         
         if ('totalFunding' in data) {
-          setTotalFunding(data.totalFunding);
+          setReceiptData(prev => ({ ...prev, totalFunding: data.totalFunding }));
         }
         
         if ('recentRound' in data) {
-          setRecentRound(prev => ({ ...prev, ...data.recentRound }));
+          setReceiptData(prev => ({
+            ...prev,
+            recentRound: data.recentRound
+          }));
         }
         
         if ('notableInvestors' in data) {
-          setNotableInvestors(data.notableInvestors);
+          setReceiptData(prev => ({ ...prev, notableInvestors: data.notableInvestors }));
         }
         
         if ('sources' in data) {
-          setSources(data.sources);
+          setReceiptData(prev => ({ ...prev, sources: data.sources }));
         }
       }
     };
 
-    chrome.runtime.onMessage.addListener(messageListener);
+    // Add listener for real chrome messages
+    chromeAPI.runtime.onMessage.addListener(messageListener);
+
+    // Add listener for mock messages in development
+    if (typeof chrome === 'undefined') {
+      const mockMessageListener = (e: CustomEvent) => messageListener(e.detail);
+      window.addEventListener('mockChromeMessage', mockMessageListener as EventListener);
+      return () => window.removeEventListener('mockChromeMessage', mockMessageListener as EventListener);
+    }
 
     const getCurrentTab = async () => {
       try {
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        const [tab] = await chromeAPI.tabs.query({ active: true, currentWindow: true });
         
         if (!tab.url) {
           throw new Error('No URL found');
@@ -66,11 +72,11 @@ export const Popup: React.FC = () => {
         const url = new URL(tab.url);
         const domain = url.hostname;
         
-        chrome.runtime.sendMessage(
+        chromeAPI.runtime.sendMessage(
           { type: 'FETCH_COMPANY_DATA', domain },
           () => {
-            if (chrome.runtime.lastError) {
-              setError(chrome.runtime.lastError.message || 'Chrome runtime error');
+            if (chromeAPI.runtime.lastError) {
+              setError(chromeAPI.runtime.lastError.message || 'Chrome runtime error');
               return;
             }
           }
@@ -84,31 +90,23 @@ export const Popup: React.FC = () => {
 
   }, []);
 
-  const renderContent = () => {
-    if (error) {
-      return (
-        <div className="flex flex-col gap-6 p-6">
-          <div className="text-red-500 text-center">
-            Error: {error}
-          </div>
-        </div>
-      );
-    }
-
+  if (error) {
     return (
       <div className="flex flex-col gap-6 p-6">
-        {companyName && <CompanyName name={companyName} />}
-        <TotalFunding amount={totalFunding} isLoading={!isComplete && !totalFunding} />
-        <RecentRound data={recentRound ?? {}} isLoading={!isComplete && !recentRound} />
-        <NotableInvestors investors={notableInvestors} isLoading={!isComplete && notableInvestors.length === 0} />
-        <Sources sources={sources} isLoading={!isComplete && sources.length === 0} />
+        <div className="text-red-500 text-center">
+          Error: {error}
+        </div>
       </div>
     );
-  };
+  }
 
   return (
     <div className="bg-white w-[400px] min-h-[500px] overflow-y-auto">
-      {renderContent()}
+      <Receipt 
+        data={receiptData} 
+        loading={!isComplete} 
+        animationSpeed={1000}
+      />
     </div>
   );
 };
