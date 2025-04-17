@@ -59,25 +59,25 @@ async function fetchCompanyDataStreaming(domain: string, _tabId?: number): Promi
             role: "user",
             content: `Extract and provide verified funding information for ${companyName} using this exact format:
 
-COMPANY_NAME: [full legal company name - do not abbreviate, must be complete]
-TOTAL_FUNDING: [exact total funding amount with currency symbol, e.g. $100M, $1.2B]
-RECENT_ROUND_AMOUNT: [exact amount of most recent funding round with currency symbol]
-RECENT_ROUND_DATE: [date in MM/YYYY format]
-RECENT_ROUND_TYPE: [exact round type: Seed, Series A, Series B, etc.]
-NOTABLE_INVESTORS: [list exactly 5 most prominent investors, separated by semicolons]
-SOURCES: [list exactly 3 most authoritative sources with complete URLs]
+            COMPANY_NAME: [full legal company name - do not abbreviate, must be complete]
+            TOTAL_FUNDING: [exact total funding amount with currency symbol, e.g. $100M, $1.2B]
+            RECENT_ROUND_AMOUNT: [exact amount of most recent funding round with currency symbol]
+            RECENT_ROUND_DATE: [date in MM/YYYY format]
+            RECENT_ROUND_TYPE: [exact round type: Seed, Series A, Series B, etc.]
+            NOTABLE_INVESTORS: [list exactly 5 most prominent investors, separated by semicolons]
+            SOURCES: [list exactly 3 most authoritative sources with complete URLs]
 
-Critical Requirements:
-1. Only include information you are completely certain about
-2. Leave any uncertain fields completely blank
-3. For NOTABLE_INVESTORS, only include institutional investors or well-known angels
-4. For SOURCES, only use URLs from Crunchbase, TechCrunch, company press releases, or SEC filings
-5. Use semicolons (;) as separators for NOTABLE_INVESTORS and SOURCES
-6. Do not include any explanatory text or notes
-7. Verify all information is from within the last 2 years
-8. Company name must be the complete legal name, not abbreviated
-9. Total funding must include currency symbol and unit (M, B, K)
-10. All URLs must be complete and valid`
+            Critical Requirements:
+            1. Only include information you are completely certain about
+            2. Leave any uncertain fields completely blank
+            3. For NOTABLE_INVESTORS, only include institutional investors or well-known angels
+            4. For SOURCES, only use URLs from Crunchbase, TechCrunch, company press releases, or SEC filings
+            5. Use semicolons (;) as separators for NOTABLE_INVESTORS and SOURCES
+            6. Do not include any explanatory text or notes
+            7. Verify all information is from within the last 2 years
+            8. Company name must be the complete legal name, not abbreviated
+            9. Total funding must include currency symbol and unit (M, B, K)
+            10. All URLs must be complete and valid`
           }]
         })
       });
@@ -102,7 +102,9 @@ Critical Requirements:
         sources: []
       };
       
+      // The buffer is used to store data from the stream that's still in binary format
       let buffer = "";
+      // The accumulatedText is used to store data that's converted from the binary in the buffer to text
       let accumulatedText = "";
       
       try {
@@ -167,7 +169,7 @@ Critical Requirements:
                               .join(' ');
 
                             // Only update if we have a valid company name (more than 2 characters)
-                            if (cleanedName.length > 2) {
+                            if (cleanedName.length > 2 && cleanedName !== companyData.name) {
                               companyData.name = cleanedName;
                               sendUpdate({ name: cleanedName });
                             }
@@ -178,7 +180,7 @@ Critical Requirements:
                           if (value) {
                             // Validate funding format (e.g., $100M, $1.2B, etc.)
                             const fundingRegex = /^\$[\d.]+[MBK]$/;
-                            if (fundingRegex.test(value)) {
+                            if (fundingRegex.test(value) && value !== companyData.totalFunding) {
                               companyData.totalFunding = value;
                               sendUpdate({ totalFunding: value });
                             } else {
@@ -189,31 +191,37 @@ Critical Requirements:
                           
                         case 'RECENT_ROUND_AMOUNT':
                           if (value) {
-                            companyData.recentRound = { 
-                              ...companyData.recentRound || {},
-                              amount: value
-                            };
-                            sendUpdate({ recentRound: companyData.recentRound });
+                            if (value !== companyData.recentRound?.amount) {
+                              companyData.recentRound = { 
+                                ...companyData.recentRound || {},
+                                amount: value
+                              };
+                              sendUpdate({ recentRound: companyData.recentRound });
+                            }
                           }
                           break;
                           
                         case 'RECENT_ROUND_DATE':
                           if (value) {
-                            companyData.recentRound = { 
-                              ...companyData.recentRound || {},
-                              date: value
-                            };
-                            sendUpdate({ recentRound: companyData.recentRound });
+                            if (value !== companyData.recentRound?.date) {
+                              companyData.recentRound = { 
+                                ...companyData.recentRound || {},
+                                date: value
+                              };
+                              sendUpdate({ recentRound: companyData.recentRound });
+                            }
                           }
                           break;
                           
                         case 'RECENT_ROUND_TYPE':
                           if (value) {
-                            companyData.recentRound = { 
-                              ...companyData.recentRound || {},
-                              type: value
-                            };
-                            sendUpdate({ recentRound: companyData.recentRound });
+                            if (value !== companyData.recentRound?.type) {
+                              companyData.recentRound = { 
+                                ...companyData.recentRound || {},
+                                type: value
+                              };
+                              sendUpdate({ recentRound: companyData.recentRound });
+                            }
                           }
                           break;
                           
@@ -226,8 +234,13 @@ Critical Requirements:
                             if (investors.length > 0) {
                               const uniqueInvestors = [...new Set(investors)].slice(0, 5);
                               
-                              if (uniqueInvestors.length !== companyData.notableInvestors?.length || 
-                                  !uniqueInvestors.every(inv => companyData.notableInvestors?.includes(inv))) {
+                              // Improved comparison to check if the arrays are actually different
+                              const hasChanged = 
+                                uniqueInvestors.length !== companyData.notableInvestors?.length ||
+                                !uniqueInvestors.every(inv => companyData.notableInvestors?.includes(inv)) ||
+                                !companyData.notableInvestors?.every(inv => uniqueInvestors.includes(inv));
+                              
+                              if (hasChanged) {
                                 companyData.notableInvestors = uniqueInvestors;
                                 sendUpdate({ notableInvestors: uniqueInvestors });
                               }
@@ -240,7 +253,6 @@ Critical Requirements:
                             const sources = value.split(';')
                               .map((src) => src.trim())
                               .filter((src) => {
-                                // Basic URL validation
                                 try {
                                   new URL(src);
                                   return true;
@@ -250,11 +262,15 @@ Critical Requirements:
                               });
                             
                             if (sources.length > 0) {
-                              // Take only unique values and limit to 3
                               const uniqueSources = [...new Set(sources)].slice(0, 3);
                               
-                              // Only update if we have valid sources
-                              if (uniqueSources.length > 0) {
+                              // Improved comparison to check if the arrays are actually different
+                              const hasChanged = 
+                                uniqueSources.length !== companyData.sources?.length ||
+                                !uniqueSources.every(src => companyData.sources?.includes(src)) ||
+                                !companyData.sources?.every(src => uniqueSources.includes(src));
+                              
+                              if (hasChanged) {
                                 companyData.sources = uniqueSources;
                                 sendUpdate({ sources: uniqueSources });
                               }

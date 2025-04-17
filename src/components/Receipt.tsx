@@ -230,7 +230,7 @@ export const Receipt = ({
   }, [data, loading, animationSpeed])
 
   return (
-    <div className="bg-white rounded-lg shadow-md p-4 max-w-sm mx-auto font-mono">
+    <div className="bg-white p-4 max-w-sm mx-auto font-mono">
       <div className="mb-2 h-6">
         <AnimatePresence mode="wait">
           {isPrinting && (

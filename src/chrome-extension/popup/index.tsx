@@ -1,11 +1,11 @@
 import "../global.css";
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { Receipt } from "../../components/Receipt";
 import { CompanyData } from "../../types/company";
 import "../../types/chrome";
 import { getChromeAPI } from "../../mocks/chrome";
 
-export const Popup: React.FC = () => {
+export const Popup = () => {
   const [receiptData, setReceiptData] = useState<Partial<CompanyData>>({});
   const [error, setError] = useState<string | null>(null);
   const [isComplete, setIsComplete] = useState<boolean>(false);
