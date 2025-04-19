@@ -93,33 +93,35 @@ async function fetchCompanyDataStreaming(domain: string, _tabId?: number): Promi
         return;
       }
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
+      const reader = response.body.getReader(); // Reader is used to read the response body that's streamed in chunks as binary data
+      const decoder = new TextDecoder(); // Decoder is used to convert the binary data to readable text
       
+      let buffer = "";
+      let currentLine = ""; // Add this to accumulate chunks into complete lines
+      let processedLines = new Set<string>();
       let companyData: Partial<CompanyData> = {
         name: companyName,
         notableInvestors: [],
         sources: []
       };
       
-      // The buffer is used to store data from the stream that's still in binary format
-      let buffer = "";
-      // The accumulatedText is used to store data that's converted from the binary in the buffer to text
-      let accumulatedText = "";
-      
       try {
         while (true) {
           const { done, value } = await reader.read();
           
           if (done) {
+            // Process any remaining complete lines in buffer
+            if (currentLine.trim()) {
+              processStreamLine(currentLine.trim(), companyData, processedLines);
+            }
             break;
           }
           
           buffer += decoder.decode(value, { stream: true });
           
-          // Process full lines
-          while (buffer.includes('\n')) {
-            const lineEnd = buffer.indexOf('\n');
+          // Process complete lines
+          let lineEnd;
+          while ((lineEnd = buffer.indexOf('\n')) !== -1) {
             const line = buffer.substring(0, lineEnd).trim();
             buffer = buffer.substring(lineEnd + 1);
             
@@ -135,150 +137,27 @@ async function fetchCompanyDataStreaming(domain: string, _tabId?: number): Promi
                 const content = parsedData.choices?.[0]?.delta?.content;
                 
                 if (content) {
-                  accumulatedText += content;
+                  console.log('Received content chunk:', content);
                   
-                  // Extract information from accumulated text
-                  const lines = accumulatedText.split('\n');
-                  for (const textLine of lines) {
-                    if (textLine.includes(':')) {
-                      const colonIndex = textLine.indexOf(':');
-                      const field = textLine.substring(0, colonIndex).trim().toUpperCase();
-                      const value = textLine.substring(colonIndex + 1).trim();
-                      
-                      if (!value || value.includes('[') && value.includes(']')) {
-                        console.log(`Skipping invalid value for ${field}:`, value);
-                        continue;
-                      }
-                      
-                      if (!validateAndLogData(field, value)) continue;
-                      
-                      switch (field) {
-                        case 'COMPANY_NAME':
-                          if (value) {
-                            // Validate and clean the company name
-                            const cleanedName = value
-                              // Remove any text within parentheses (including the parentheses)
-                              .replace(/\([^)]*\)/g, '')
-                              // Remove commas and any text after them
-                              .split(',')[0]
-                              // Replace multiple spaces with single space and trim
-                              .replace(/\s+/g, ' ').trim()
-                              // Capitalize first letter of each word
-                              .split(' ')
-                              .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-                              .join(' ');
-
-                            // Only update if we have a valid company name (more than 2 characters)
-                            if (cleanedName.length > 2 && cleanedName !== companyData.name) {
-                              companyData.name = cleanedName;
-                              sendUpdate({ name: cleanedName });
-                            }
-                          }
-                          break;
-                          
-                        case 'TOTAL_FUNDING':
-                          if (value) {
-                            // Validate funding format (e.g., $100M, $1.2B, etc.)
-                            const fundingRegex = /^\$[\d.]+[MBK]$/;
-                            if (fundingRegex.test(value) && value !== companyData.totalFunding) {
-                              companyData.totalFunding = value;
-                              sendUpdate({ totalFunding: value });
-                            } else {
-                              console.log('Invalid funding format:', value);
-                            }
-                          }
-                          break;
-                          
-                        case 'RECENT_ROUND_AMOUNT':
-                          if (value) {
-                            if (value !== companyData.recentRound?.amount) {
-                              companyData.recentRound = { 
-                                ...companyData.recentRound || {},
-                                amount: value
-                              };
-                              sendUpdate({ recentRound: companyData.recentRound });
-                            }
-                          }
-                          break;
-                          
-                        case 'RECENT_ROUND_DATE':
-                          if (value) {
-                            if (value !== companyData.recentRound?.date) {
-                              companyData.recentRound = { 
-                                ...companyData.recentRound || {},
-                                date: value
-                              };
-                              sendUpdate({ recentRound: companyData.recentRound });
-                            }
-                          }
-                          break;
-                          
-                        case 'RECENT_ROUND_TYPE':
-                          if (value) {
-                            if (value !== companyData.recentRound?.type) {
-                              companyData.recentRound = { 
-                                ...companyData.recentRound || {},
-                                type: value
-                              };
-                              sendUpdate({ recentRound: companyData.recentRound });
-                            }
-                          }
-                          break;
-                          
-                        case 'NOTABLE_INVESTORS':
-                          if (value && !value.includes('[')) {
-                            const investors = value.split(';')
-                              .map((inv) => inv.trim())
-                              .filter((inv) => inv && !inv.includes('[') && inv.length > 2);
-                            
-                            if (investors.length > 0) {
-                              const uniqueInvestors = [...new Set(investors)].slice(0, 5);
-                              
-                              // Improved comparison to check if the arrays are actually different
-                              const hasChanged = 
-                                uniqueInvestors.length !== companyData.notableInvestors?.length ||
-                                !uniqueInvestors.every(inv => companyData.notableInvestors?.includes(inv)) ||
-                                !companyData.notableInvestors?.every(inv => uniqueInvestors.includes(inv));
-                              
-                              if (hasChanged) {
-                                companyData.notableInvestors = uniqueInvestors;
-                                sendUpdate({ notableInvestors: uniqueInvestors });
-                              }
-                            }
-                          }
-                          break;
-                          
-                        case 'SOURCES':
-                          if (value && !value.includes('[')) {
-                            const sources = value.split(';')
-                              .map((src) => src.trim())
-                              .filter((src) => {
-                                try {
-                                  new URL(src);
-                                  return true;
-                                } catch {
-                                  return false;
-                                }
-                              });
-                            
-                            if (sources.length > 0) {
-                              const uniqueSources = [...new Set(sources)].slice(0, 3);
-                              
-                              // Improved comparison to check if the arrays are actually different
-                              const hasChanged = 
-                                uniqueSources.length !== companyData.sources?.length ||
-                                !uniqueSources.every(src => companyData.sources?.includes(src)) ||
-                                !companyData.sources?.every(src => uniqueSources.includes(src));
-                              
-                              if (hasChanged) {
-                                companyData.sources = uniqueSources;
-                                sendUpdate({ sources: uniqueSources });
-                              }
-                            }
-                          }
-                          break;
+                  // Accumulate content into currentLine
+                  currentLine += content;
+                  
+                  // If we have a complete line (ends with newline or contains newline characters)
+                  if (content.includes('\n') || content.endsWith('\n')) {
+                    // Split accumulated content into lines
+                    const lines = currentLine.split('\n');
+                    
+                    // Process all complete lines except the last one (which might be incomplete)
+                    for (let i = 0; i < lines.length - 1; i++) {
+                      const completeLine = lines[i].trim();
+                      if (completeLine) {
+                        console.log('Processing complete line:', completeLine);
+                        processStreamLine(completeLine, companyData, processedLines);
                       }
                     }
+                    
+                    // Keep the last line in currentLine if it's not empty
+                    currentLine = lines[lines.length - 1];
                   }
                 }
               } catch (e) {
@@ -299,6 +178,172 @@ async function fetchCompanyDataStreaming(domain: string, _tabId?: number): Promi
     }
   } catch (error) {
     sendUpdate({ error: error instanceof Error ? error.message : 'Unknown error occurred' });
+  }
+}
+
+// New helper function to process individual lines
+function processStreamLine(
+  line: string, 
+  companyData: Partial<CompanyData>, 
+  processedLines: Set<string>
+): void {
+  // Skip if we've already processed this exact line
+  if (processedLines.has(line)) {
+    return;
+  }
+
+  // Only process lines that contain a field delimiter
+  if (!line.includes(':')) {
+    return;
+  }
+
+  const colonIndex = line.indexOf(':');
+  const field = line.substring(0, colonIndex).trim().toUpperCase();
+  const value = line.substring(colonIndex + 1).trim();
+
+  // Skip invalid or placeholder values
+  if (!value || value.includes('[') && value.includes(']')) {
+    return;
+  }
+
+  // Skip if we've already processed this field:value combination
+  const fieldValueKey = `${field}:${value}`;
+  if (processedLines.has(fieldValueKey)) {
+    return;
+  }
+
+  processedLines.add(fieldValueKey);
+
+  if (!validateAndLogData(field, value)) {
+    return;
+  }
+
+  let shouldUpdate = false;
+  const update: Partial<CompanyData> = {};
+
+  switch (field) {
+    case 'COMPANY_NAME':
+      if (value && value.length > 2) {
+        const cleanedName = value
+          .replace(/\([^)]*\)/g, '')
+          .split(',')[0]
+          .replace(/\s+/g, ' ')
+          .trim()
+          .split(' ')
+          .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+          .join(' ');
+
+        if (cleanedName !== companyData.name) {
+          companyData.name = cleanedName;
+          update.name = cleanedName;
+          shouldUpdate = true;
+        }
+      }
+      break;
+
+    case 'TOTAL_FUNDING':
+      if (value) {
+        const fundingRegex = /^\$[\d.]+[MBK]$/;
+        if (fundingRegex.test(value) && value !== companyData.totalFunding) {
+          companyData.totalFunding = value;
+          update.totalFunding = value;
+          shouldUpdate = true;
+        }
+      }
+      break;
+
+    case 'RECENT_ROUND_AMOUNT':
+      if (value && (!companyData.recentRound?.amount || companyData.recentRound.amount !== value)) {
+        companyData.recentRound = { 
+          ...companyData.recentRound || {},
+          amount: value
+        };
+        update.recentRound = companyData.recentRound;
+        shouldUpdate = true;
+      }
+      break;
+
+    case 'RECENT_ROUND_DATE':
+      if (value && (!companyData.recentRound?.date || companyData.recentRound.date !== value)) {
+        companyData.recentRound = { 
+          ...companyData.recentRound || {},
+          date: value
+        };
+        update.recentRound = companyData.recentRound;
+        shouldUpdate = true;
+      }
+      break;
+
+    case 'RECENT_ROUND_TYPE':
+      if (value && (!companyData.recentRound?.type || companyData.recentRound.type !== value)) {
+        companyData.recentRound = { 
+          ...companyData.recentRound || {},
+          type: value
+        };
+        update.recentRound = companyData.recentRound;
+        shouldUpdate = true;
+      }
+      break;
+
+    case 'NOTABLE_INVESTORS':
+      if (value && !value.includes('[')) {
+        const investors = value.split(';')
+          .map((inv) => inv.trim())
+          .filter((inv) => inv && !inv.includes('[') && inv.length > 2);
+        
+        if (investors.length > 0) {
+          const uniqueInvestors = [...new Set(investors)].slice(0, 5);
+          
+          // Improved comparison to check if the arrays are actually different
+          const hasChanged = 
+            uniqueInvestors.length !== companyData.notableInvestors?.length ||
+            !uniqueInvestors.every(inv => companyData.notableInvestors?.includes(inv)) ||
+            !companyData.notableInvestors?.every(inv => uniqueInvestors.includes(inv));
+          
+          if (hasChanged) {
+            companyData.notableInvestors = uniqueInvestors;
+            update.notableInvestors = uniqueInvestors;
+            shouldUpdate = true;
+          }
+        }
+      }
+      break;
+      
+    case 'SOURCES':
+      if (value && !value.includes('[')) {
+        const sources = value.split(';')
+          .map((src) => src.trim())
+          .filter((src) => {
+            try {
+              new URL(src);
+              return true;
+            } catch {
+              return false;
+            }
+          });
+        
+        if (sources.length > 0) {
+          const uniqueSources = [...new Set(sources)].slice(0, 3);
+          
+          // Improved comparison to check if the arrays are actually different
+          const hasChanged = 
+            uniqueSources.length !== companyData.sources?.length ||
+            !uniqueSources.every(src => companyData.sources?.includes(src)) ||
+            !companyData.sources?.every(src => uniqueSources.includes(src));
+          
+          if (hasChanged) {
+            companyData.sources = uniqueSources;
+            update.sources = uniqueSources;
+            shouldUpdate = true;
+          }
+        }
+      }
+      break;
+  }
+
+  // Only send update if we have new information
+  if (shouldUpdate) {
+    sendUpdate(update);
   }
 }
 
