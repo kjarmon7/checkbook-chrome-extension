@@ -113,7 +113,12 @@ const SourcesSection = ({ sources }: { sources: string[] }) => (
       <ul className="space-y-1">
         {sources.map((source, index) => (
           <li key={index} className="font-mono text-sm text-blue-500 flex items-center justify-center">
-            <a href={source} className="hover:underline flex items-center">
+            <a 
+              href={source} 
+              className="hover:underline flex items-center"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
               {source.substring(0, 30)}...
               <ExternalLink className="ml-1 h-3 w-3" />
             </a>
