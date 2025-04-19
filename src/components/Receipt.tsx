@@ -56,7 +56,9 @@ const TotalFundingSection = ({ amount }: { amount: string }) => (
   <div className="border-b border-dashed border-gray-300 py-3">
     <div className="flex justify-between">
       <span className="font-mono">Total Funding:</span>
-      <span className="font-mono font-semibold">{amount}</span>
+      <span className="font-mono font-semibold">
+        {amount || "Information Unavailable"}
+      </span>
     </div>
   </div>
 )
@@ -74,15 +76,15 @@ const RecentFundingSection = ({
     <h3 className="font-mono mb-2 text-center">Recent Funding</h3>
     <div className="flex justify-between mb-1">
       <span className="font-mono">Round:</span>
-      <span className="font-mono">{type}</span>
+      <span className="font-mono">{type || "Information Unavailable"}</span>
     </div>
     <div className="flex justify-between mb-1">
       <span className="font-mono">Raised:</span>
-      <span className="font-mono">{amount}</span>
+      <span className="font-mono">{amount || "Information Unavailable"}</span>
     </div>
     <div className="flex justify-between">
       <span className="font-mono">Date:</span>
-      <span className="font-mono">{date}</span>
+      <span className="font-mono">{date || "Information Unavailable"}</span>
     </div>
   </div>
 )
@@ -90,29 +92,37 @@ const RecentFundingSection = ({
 const InvestorsSection = ({ investors }: { investors: string[] }) => (
   <div className="border-b border-dashed border-gray-300 py-3">
     <h3 className="font-mono mb-2 text-center">Notable Investors</h3>
-    <ul className="space-y-1">
-      {investors.map((investor, index) => (
-        <li key={index} className="font-mono text-center">
-          {investor}
-        </li>
-      ))}
-    </ul>
+    {investors.length > 0 ? (
+      <ul className="space-y-1">
+        {investors.map((investor, index) => (
+          <li key={index} className="font-mono text-center">
+            {investor}
+          </li>
+        ))}
+      </ul>
+    ) : (
+      <div className="font-mono text-center">Information Unavailable</div>
+    )}
   </div>
 )
 
 const SourcesSection = ({ sources }: { sources: string[] }) => (
   <div className="py-3">
     <h3 className="font-mono mb-2 text-center">Sources</h3>
-    <ul className="space-y-1">
-      {sources.map((source, index) => (
-        <li key={index} className="font-mono text-sm text-blue-500 flex items-center justify-center">
-          <a href={source} className="hover:underline flex items-center">
-            {source.substring(0, 30)}...
-            <ExternalLink className="ml-1 h-3 w-3" />
-          </a>
-        </li>
-      ))}
-    </ul>
+    {sources.length > 0 ? (
+      <ul className="space-y-1">
+        {sources.map((source, index) => (
+          <li key={index} className="font-mono text-sm text-blue-500 flex items-center justify-center">
+            <a href={source} className="hover:underline flex items-center">
+              {source.substring(0, 30)}...
+              <ExternalLink className="ml-1 h-3 w-3" />
+            </a>
+          </li>
+        ))}
+      </ul>
+    ) : (
+      <div className="font-mono text-center">Information Unavailable</div>
+    )}
   </div>
 )
 
@@ -171,13 +181,13 @@ export const Receipt = ({
     const sections: string[] = []
     const expectedSections: string[] = []
 
-    // Build list of expected sections
+    // Build list of expected sections - now we'll show all sections even with empty data
     if (data.name) {
       expectedSections.push("name")
-      if (data.totalFunding) expectedSections.push("totalFunding")
-      if (data.recentRound) expectedSections.push("recentRound")
-      if (data.notableInvestors && data.notableInvestors.length > 0) expectedSections.push("notableInvestors")
-      if (data.sources && data.sources.length > 0) expectedSections.push("sources")
+      expectedSections.push("totalFunding")  // Always show these sections
+      expectedSections.push("recentRound")   // even if data is empty
+      expectedSections.push("notableInvestors")
+      expectedSections.push("sources")
     }
 
     // Always show company name first
@@ -201,21 +211,11 @@ export const Receipt = ({
         }, delay)
       }
 
-      if (data.totalFunding) {
-        revealSection("totalFunding", animationSpeed)
-      }
-
-      if (data.recentRound) {
-        revealSection("recentRound", animationSpeed * 2)
-      }
-
-      if (data.notableInvestors && data.notableInvestors.length > 0) {
-        revealSection("notableInvestors", animationSpeed * 3)
-      }
-
-      if (data.sources && data.sources.length > 0) {
-        revealSection("sources", animationSpeed * 4)
-      }
+      // Show all sections in sequence, regardless of whether they have data
+      revealSection("totalFunding", animationSpeed)
+      revealSection("recentRound", animationSpeed * 2)
+      revealSection("notableInvestors", animationSpeed * 3)
+      revealSection("sources", animationSpeed * 4)
 
       // If there's only one section, mark as complete after it appears
       if (expectedSections.length === 1) {
