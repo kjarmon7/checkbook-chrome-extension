@@ -15,4 +15,10 @@ declare const chrome: {
       url?: string;
     }[]>;
   };
+  storage: {
+    local: {
+      get: (keys: string | string[] | object | null, callback: (items: { [key: string]: any }) => void) => void;
+      set: (items: object, callback?: () => void) => void;
+    };
+  };
 }; 

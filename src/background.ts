@@ -1,5 +1,6 @@
 import { CompanyData } from './types';
 import { config } from './config/env';
+import { isDataStale, manageStorageQuota, getStorageKeyForDomain } from './utils/storage';
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   console.log('Background script received message:', request);
@@ -12,18 +13,84 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   return false;
 });
 
-function sendUpdate(data: Partial<CompanyData> | { error: string } | { complete: boolean }) {
+function sendUpdate(
+  data: Partial<CompanyData> | { error: string } | { complete: boolean },
+  domain: string
+) {
   console.log('Sending update to popup:', data);
-  chrome.runtime.sendMessage({ type: 'COMPANY_DATA_UPDATE', data });
-}
+  chrome.runtime.sendMessage({ type: 'COMPANY_DATA_UPDATE', data, domain });
+  
+  // If this is a data update (not an error or complete message), update our storage
+  if (!('error' in data) && !('complete' in data)) {
+    const storageKey = getStorageKeyForDomain(domain);
+    
+    chrome.storage.local.get([storageKey], async (result) => {
+      const currentData = result[storageKey] || {};
+      
+      // Check if current data is stale
+      if (currentData.lastUpdated && !isDataStale(currentData.lastUpdated)) {
+        console.log('Using cached data, not stale yet');
+        return;
+      }
 
-function validateAndLogData(field: string, value: any) {
-  console.log(`Processing ${field}:`, value);
-  if (!value) {
-    console.warn(`Empty value received for ${field}`);
-    return false;
+      // Manage storage quota before saving
+      await manageStorageQuota();
+
+      const updatedData = {
+        ...currentData,
+        ...data as Partial<CompanyData>,
+        domain,
+        lastAccessed: new Date().toISOString()
+      };
+      
+      // Save the merged data
+      chrome.storage.local.set({ 
+        [storageKey]: updatedData 
+      }, () => {
+        if (chrome.runtime.lastError) {
+          console.error('Error saving data:', chrome.runtime.lastError);
+          return;
+        }
+        console.log('Updated data saved to storage:', updatedData);
+      });
+    });
   }
-  return true;
+  
+  // When complete message is received
+  if ('complete' in data) {
+    const storageKey = getStorageKeyForDomain(domain);
+    chrome.storage.local.get([storageKey], async (result) => {
+      if (!result[storageKey]) {
+        console.warn('No company data found to save on completion');
+        return;
+      }
+      
+      // Manage storage quota before final save
+      await manageStorageQuota();
+
+      const finalData = {
+        ...result[storageKey],  // Get existing data
+        domain,
+        name: result[storageKey].name,
+        totalFunding: result[storageKey].totalFunding,
+        notableInvestors: result[storageKey].notableInvestors || [],
+        recentRound: result[storageKey].recentRound,
+        sources: result[storageKey].sources || [],
+        lastUpdated: new Date().toISOString(),
+        lastAccessed: new Date().toISOString()
+      };
+      
+      chrome.storage.local.set({ 
+        [storageKey]: finalData 
+      }, () => {
+        if (chrome.runtime.lastError) {
+          console.error('Error saving final data:', chrome.runtime.lastError);
+          return;
+        }
+        console.log('Final data saved to storage:', finalData);
+      });
+    });
+  }
 }
 
 async function fetchCompanyDataStreaming(domain: string, _tabId?: number): Promise<void> {
@@ -32,12 +99,12 @@ async function fetchCompanyDataStreaming(domain: string, _tabId?: number): Promi
     const companyName = extractCompanyName(domain);
     console.log('Extracted company name:', companyName);
     
-    sendUpdate({ name: companyName });
+    sendUpdate({ name: companyName }, domain);
     
     // Check if API key is available
     if (!config.PERPLEXITY_API_KEY) {
       console.error('No Perplexity API key found in configuration!');
-      sendUpdate({ error: 'No API key available. Please add your Perplexity API key to .env file.' });
+      sendUpdate({ error: 'No API key available. Please add your Perplexity API key to .env file.' }, domain);
       return;
     }
     
@@ -84,12 +151,12 @@ async function fetchCompanyDataStreaming(domain: string, _tabId?: number): Promi
 
       if (!response.ok) {
         const errorText = await response.text();
-        sendUpdate({ error: `Failed to fetch company data: ${response.status} ${errorText}` });
+        sendUpdate({ error: `Failed to fetch company data: ${response.status} ${errorText}` }, domain);
         return;
       }
 
       if (!response.body) {
-        sendUpdate({ error: 'Response body is null' });
+        sendUpdate({ error: 'Response body is null' }, domain);
         return;
       }
 
@@ -112,7 +179,7 @@ async function fetchCompanyDataStreaming(domain: string, _tabId?: number): Promi
           if (done) {
             // Process any remaining complete lines in buffer
             if (currentLine.trim()) {
-              processStreamLine(currentLine.trim(), companyData, processedLines);
+              processStreamLine(currentLine.trim(), companyData, processedLines, domain);
             }
             break;
           }
@@ -152,7 +219,7 @@ async function fetchCompanyDataStreaming(domain: string, _tabId?: number): Promi
                       const completeLine = lines[i].trim();
                       if (completeLine) {
                         console.log('Processing complete line:', completeLine);
-                        processStreamLine(completeLine, companyData, processedLines);
+                        processStreamLine(completeLine, companyData, processedLines, domain);
                       }
                     }
                     
@@ -168,16 +235,23 @@ async function fetchCompanyDataStreaming(domain: string, _tabId?: number): Promi
         }
       } catch (error) {
         console.error('Error reading stream:', error);
-        sendUpdate({ error: `Error reading stream: ${error instanceof Error ? error.message : String(error)}` });
+        sendUpdate({ error: `Error reading stream: ${error instanceof Error ? error.message : String(error)}` }, domain);
       } finally {
-        sendUpdate(companyData);
-        sendUpdate({ complete: true } as any);
+        // First ensure the final companyData is saved
+        if (Object.keys(companyData).length > 0) {
+            await new Promise<void>((resolve) => {
+                sendUpdate(companyData, domain);
+                setTimeout(resolve, 100); // Give a small delay to ensure data is saved
+            });
+        }
+        // Then send the completion message
+        sendUpdate({ complete: true } as any, domain);
       }
     } catch (fetchError) {
-      sendUpdate({ error: `Fetch operation failed: ${fetchError instanceof Error ? fetchError.message : String(fetchError)}` });
+      sendUpdate({ error: `Fetch operation failed: ${fetchError instanceof Error ? fetchError.message : String(fetchError)}` }, domain);
     }
   } catch (error) {
-    sendUpdate({ error: error instanceof Error ? error.message : 'Unknown error occurred' });
+    sendUpdate({ error: error instanceof Error ? error.message : 'Unknown error occurred' }, domain);
   }
 }
 
@@ -185,7 +259,8 @@ async function fetchCompanyDataStreaming(domain: string, _tabId?: number): Promi
 function processStreamLine(
   line: string, 
   companyData: Partial<CompanyData>, 
-  processedLines: Set<string>
+  processedLines: Set<string>,
+  domain: string  // Add domain parameter
 ): void {
   // Skip if we've already processed this exact line
   if (processedLines.has(line)) {
@@ -213,10 +288,9 @@ function processStreamLine(
   }
 
   processedLines.add(fieldValueKey);
-
-  if (!validateAndLogData(field, value)) {
-    return;
-  }
+  
+  // Replace validateAndLogData with simple logging
+  console.log(`Processing ${field}:`, value);
 
   let shouldUpdate = false;
   const update: Partial<CompanyData> = {};
@@ -343,7 +417,7 @@ function processStreamLine(
 
   // Only send update if we have new information
   if (shouldUpdate) {
-    sendUpdate(update);
+    sendUpdate(update, domain);
   }
 }
 

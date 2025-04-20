@@ -131,6 +131,16 @@ const SourcesSection = ({ sources }: { sources: string[] }) => (
   </div>
 )
 
+// Add this button component near the other individual components (around line 40)
+const SearchButton = ({ onClick }: { onClick: () => void }) => (
+  <button
+    onClick={onClick}
+    className="w-full py-2 px-4 bg-black text-white rounded font-mono hover:bg-gray-800 transition-colors"
+  >
+    Run Perplexity Search Again
+  </button>
+)
+
 // Animation variants
 const sectionVariants = {
   hidden: {
@@ -162,6 +172,8 @@ interface ReceiptProps {
     data: Partial<CompanyData>;
     loading: boolean;
     animationSpeed: number;
+    skipAnimation?: boolean;
+    onSearch?: () => void;
 }
 
 // Main Receipt Component
@@ -169,6 +181,8 @@ export const Receipt = ({
   data,
   loading = false,
   animationSpeed = 1000,
+  skipAnimation = false,
+  onSearch,
 }: ReceiptProps) => {
   const [visibleSections, setVisibleSections] = useState<string[]>([])
   const [isPrinting, setIsPrinting] = useState(false)
@@ -183,30 +197,30 @@ export const Receipt = ({
       return
     }
 
-    const sections: string[] = []
-    const expectedSections: string[] = []
+    // Define expected sections
+    const expectedSections: string[] = data.name 
+      ? ["name", "totalFunding", "recentRound", "notableInvestors", "sources", "searchButton"]
+      : [];
 
-    // Build list of expected sections - now we'll show all sections even with empty data
-    if (data.name) {
-      expectedSections.push("name")
-      expectedSections.push("totalFunding")  // Always show these sections
-      expectedSections.push("recentRound")   // even if data is empty
-      expectedSections.push("notableInvestors")
-      expectedSections.push("sources")
+    // Handle skip animation case first
+    if (skipAnimation && data.name) {
+      setVisibleSections(expectedSections)
+      setIsPrinting(false)
+      setIsComplete(true)
+      return
     }
 
-    // Always show company name first
+    // Initialize sections with "name" if data.name exists
+    setVisibleSections(data.name ? ["name"] : [])
+
     if (data.name) {
-      sections.push("name")
       setIsPrinting(true)
       setIsComplete(false)
 
-      // Simulate printing animation by revealing sections one by one
       const revealSection = (section: string, delay: number) => {
         setTimeout(() => {
           setVisibleSections((prev) => [...prev, section])
 
-          // Check if this is the last section
           if (section === expectedSections[expectedSections.length - 1]) {
             setTimeout(() => {
               setIsPrinting(false)
@@ -216,13 +230,12 @@ export const Receipt = ({
         }, delay)
       }
 
-      // Show all sections in sequence, regardless of whether they have data
       revealSection("totalFunding", animationSpeed)
       revealSection("recentRound", animationSpeed * 2)
       revealSection("notableInvestors", animationSpeed * 3)
       revealSection("sources", animationSpeed * 4)
+      revealSection("searchButton", animationSpeed * 5)
 
-      // If there's only one section, mark as complete after it appears
       if (expectedSections.length === 1) {
         setTimeout(() => {
           setIsPrinting(false)
@@ -230,9 +243,7 @@ export const Receipt = ({
         }, animationSpeed)
       }
     }
-
-    setVisibleSections(sections)
-  }, [data, loading, animationSpeed])
+  }, [data, loading, animationSpeed, skipAnimation])
 
   return (
     <div className="bg-white p-4 max-w-sm mx-auto font-mono">
@@ -304,8 +315,23 @@ export const Receipt = ({
               <SourcesSection sources={data.sources} />
             </motion.div>
           )}
+
+          {visibleSections.includes("searchButton") && onSearch && (
+            <motion.div 
+              key="searchButton" 
+              initial="hidden" 
+              animate="visible" 
+              exit="exit" 
+              variants={sectionVariants}
+              className="mt-4"
+            >
+              <SearchButton onClick={onSearch} />
+            </motion.div>
+          )}
         </AnimatePresence>
       </div>
+
+      
     </div>
   )
 } 
