@@ -13,13 +13,14 @@ export const Popup = () => {
   const [isCachedData, setIsCachedData] = useState<boolean>(false);
 
   useEffect(() => {
+    console.log('Initializing Popup component');
     const chromeAPI = getChromeAPI();
     
     const getCurrentTab = async () => {
       try {
         const [tab] = await chromeAPI.tabs.query({ active: true, currentWindow: true });
         
-        if (!tab.url) {
+        if (!tab?.url) {
           throw new Error('No URL found');
         }
         
@@ -27,34 +28,30 @@ export const Popup = () => {
         const domain = url.hostname;
         const storageKey = getStorageKeyForDomain(domain);
         
-        // Check for saved data first
-        if (typeof chrome !== 'undefined') {
-          chrome.storage.local.get([storageKey], async (result) => {
-            const cachedData = result[storageKey];
-            
-            // If we have cached data and it's not stale, use it
-            if (cachedData && !isDataStale(cachedData.lastUpdated)) {
-              console.log('Using cached data:', cachedData);
-              setReceiptData(cachedData);
-              setIsComplete(true);
-              setIsCachedData(true);
-              return;
-            }
-            
-            // Only fetch new data if cache is missing or stale
-            setIsCachedData(false);
-            chromeAPI.runtime.sendMessage(
-              { type: 'FETCH_COMPANY_DATA', domain },
-              () => {
-                if (chromeAPI.runtime.lastError) {
-                  setError(chromeAPI.runtime.lastError.message || 'Chrome runtime error');
-                  return;
-                }
+        chromeAPI.storage.local.get([storageKey], async (result) => {
+          const cachedData = result[storageKey];
+          
+          if (cachedData && !isDataStale(cachedData.lastUpdated)) {
+            console.log('Using cached data:', cachedData);
+            setReceiptData(cachedData);
+            setIsComplete(true);
+            setIsCachedData(true);
+            return;
+          }
+          
+          setIsCachedData(false);
+          chromeAPI.runtime.sendMessage(
+            { type: 'FETCH_COMPANY_DATA', domain },
+            () => {
+              if (chromeAPI.runtime.lastError) {
+                console.error('Chrome runtime error:', chromeAPI.runtime.lastError);
+                setError(chromeAPI.runtime.lastError.message || 'Chrome runtime error');
               }
-            );
-          });
-        }
+            }
+          );
+        });
       } catch (err) {
+        console.error('Error in getCurrentTab:', err);
         setError(err instanceof Error ? err.message : 'Unknown error occurred');
       }
     };
@@ -62,6 +59,7 @@ export const Popup = () => {
     getCurrentTab();
 
     const messageListener = (message: {type: string, data: any}) => {
+      console.log('Received message:', message);
       if (message.type === 'COMPANY_DATA_UPDATE') {
         const data = message.data;
         
@@ -70,11 +68,6 @@ export const Popup = () => {
           return;
         }
         
-        if ('complete' in data) {
-          setIsComplete(true);
-          return;
-        }
-                
         // Update the UI with the new data immediately
         setReceiptData(prev => {
           const newData = { ...prev };
@@ -99,29 +92,42 @@ export const Popup = () => {
             newData.sources = data.sources;
           }
           
+          console.log('Updating receipt data to:', newData);
           return newData;
         });
+        
+        // Set complete after updating the data
+        if ('complete' in data) {
+          setIsComplete(true);
+        }
       }
     };
 
-    // Add listener for real chrome messages
-    chromeAPI.runtime.onMessage.addListener(messageListener);
+    try {
+      chromeAPI.runtime.onMessage.addListener(messageListener);
+      console.log('Added message listener');
 
-    // Add listener for mock messages in development
-    if (typeof chrome === 'undefined') {
-      const mockMessageListener = (e: CustomEvent) => messageListener(e.detail);
-      window.addEventListener('mockChromeMessage', mockMessageListener as EventListener);
-      return () => window.removeEventListener('mockChromeMessage', mockMessageListener as EventListener);
+      return () => {
+        chromeAPI.runtime.onMessage.removeListener(messageListener);
+        console.log('Removed message listener');
+      };
+    } catch (err) {
+      console.error('Error setting up message listener:', err);
     }
-
   }, []);
 
   if (error) {
     return (
-      <div className="flex flex-col gap-6 p-6">
-        <div className="text-red-500 text-center">
+      <div className="bg-white w-[400px] min-h-[500px] overflow-y-auto">
+        <div className="text-red-500 text-center p-4">
           Error: {error}
         </div>
+        <Receipt 
+          data={receiptData} 
+          loading={!isComplete} 
+          animationSpeed={1000}
+          skipAnimation={isCachedData}
+        />
       </div>
     );
   }

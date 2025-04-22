@@ -18,7 +18,8 @@ export default defineConfig({
     }),
   ],
   server: {
-    open: "/popup-local.html",
+    port: 5173,
+    open: '/popup-local.html',
   },
   build: {
     outDir: 'dist',
