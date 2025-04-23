@@ -139,7 +139,7 @@ export const Popup = () => {
 
   if (error) {
     return (
-      <div className="bg-white w-[400px] min-h-[500px] overflow-y-auto">
+      <div className="bg-white w-[400px] min-h-[500px] overflow-y-scroll scrollbar-none">
         <div className="text-red-500 text-center p-4">
           Error: {error}
         </div>
@@ -155,7 +155,7 @@ export const Popup = () => {
   }
 
   return (
-    <div className="bg-white w-[400px] min-h-[500px] overflow-y-auto">
+    <div className="bg-white w-[400px] min-h-[500px] overflow-y-scroll scrollbar-none">
       <Receipt 
         data={receiptData} 
         loading={!isComplete} 

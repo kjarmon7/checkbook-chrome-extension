@@ -47,7 +47,7 @@ const ThinkingAnimation = ({ text, isActive }: { text: string; isActive: boolean
 
 // Individual receipt section components
 const ReceiptHeader = ({ name }: { name: string }) => (
-  <div className="border-b border-dashed border-gray-300 py-3 text-center">
+  <div className="border-b border-dashed border-gray-300 py-5 text-center">
     <h2 className="text-xl font-mono">{name}</h2>
   </div>
 )
@@ -55,8 +55,8 @@ const ReceiptHeader = ({ name }: { name: string }) => (
 const TotalFundingSection = ({ amount }: { amount: string }) => (
   <div className="border-b border-dashed border-gray-300 py-3">
     <div className="flex justify-between">
-      <span className="font-mono">Total Funding:</span>
-      <span className="font-mono font-semibold">
+      <span className="font-mono">Total Funding</span>
+      <span className="font-mono">
         {amount || "Information Unavailable"}
       </span>
     </div>
@@ -135,9 +135,9 @@ const SourcesSection = ({ sources }: { sources: string[] }) => (
 const SearchButton = ({ onClick }: { onClick: () => void }) => (
   <button
     onClick={onClick}
-    className="w-full py-2 px-4 bg-black text-white rounded font-mono hover:bg-gray-800 transition-colors"
+    className="w-full py-2 px-4 bg-white text-black border border-gray-400 rounded font-mono hover:bg-black hover:text-white hover:border-black transition-colors"
   >
-    Refresh Data
+    Print Fresh Data
   </button>
 )
 
@@ -247,7 +247,7 @@ export const Receipt = ({
 
   return (
     <div className="bg-white p-4 max-w-sm mx-auto font-mono">
-      <div className="mb-2 h-6">
+      <div className="mb-5 mt-2 h-6">
         <AnimatePresence mode="wait">
           {isPrinting && (
             <motion.div

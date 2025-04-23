@@ -26,3 +26,31 @@ html {
   display: inline-block;
   white-space: pre-wrap;
 }
+
+/* Chrome Extension specific scrollbar hiding */
+html, body, div {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+
+html::-webkit-scrollbar,
+body::-webkit-scrollbar,
+div::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+/* Add this to src/chrome-extension/global.css */
+@layer utilities {
+  .scrollbar-none {
+    -ms-overflow-style: none !important;  /* IE and Edge */
+    scrollbar-width: none !important;  /* Firefox */
+  }
+  
+  .scrollbar-none::-webkit-scrollbar {
+    display: none !important;  /* Chrome, Safari and Opera */
+    width: 0 !important;
+    height: 0 !important;
+  }
+}
