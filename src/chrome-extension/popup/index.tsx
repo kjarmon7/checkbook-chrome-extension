@@ -116,6 +116,27 @@ export const Popup = () => {
     }
   }, []);
 
+  const handleSearch = async () => {
+    // Reset states
+    setIsComplete(false);
+    setIsCachedData(false);
+    
+    const chromeAPI = getChromeAPI();
+    const [tab] = await chromeAPI.tabs.query({ active: true, currentWindow: true });
+    if (tab?.url) {
+      const url = new URL(tab.url);
+      const domain = url.hostname;
+      chromeAPI.runtime.sendMessage(
+        { type: 'FETCH_COMPANY_DATA', domain },
+        () => {
+          if (chromeAPI.runtime.lastError) {
+            setError(chromeAPI.runtime.lastError.message || 'Chrome runtime error');
+          }
+        }
+      );
+    }
+  };
+
   if (error) {
     return (
       <div className="bg-white w-[400px] min-h-[500px] overflow-y-auto">
@@ -127,6 +148,7 @@ export const Popup = () => {
           loading={!isComplete} 
           animationSpeed={1000}
           skipAnimation={isCachedData}
+          onSearch={handleSearch}
         />
       </div>
     );
@@ -139,6 +161,7 @@ export const Popup = () => {
         loading={!isComplete} 
         animationSpeed={1000}
         skipAnimation={isCachedData}
+        onSearch={handleSearch}
       />
     </div>
   );

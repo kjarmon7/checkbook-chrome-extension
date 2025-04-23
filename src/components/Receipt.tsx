@@ -137,7 +137,7 @@ const SearchButton = ({ onClick }: { onClick: () => void }) => (
     onClick={onClick}
     className="w-full py-2 px-4 bg-black text-white rounded font-mono hover:bg-gray-800 transition-colors"
   >
-    Run Perplexity Search Again
+    Refresh Data
   </button>
 )
 
@@ -315,8 +315,11 @@ export const Receipt = ({
               <SourcesSection sources={data.sources} />
             </motion.div>
           )}
+        </AnimatePresence>
+      </div>
 
-          {visibleSections.includes("searchButton") && onSearch && (
+      <AnimatePresence>
+        {visibleSections.includes("searchButton") && onSearch && (
             <motion.div 
               key="searchButton" 
               initial="hidden" 
@@ -329,8 +332,6 @@ export const Receipt = ({
             </motion.div>
           )}
         </AnimatePresence>
-      </div>
-
       
     </div>
   )
