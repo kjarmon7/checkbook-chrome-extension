@@ -190,60 +190,77 @@ export const Receipt = ({
 
   // Reset and start animation when data changes or loading state changes
   useEffect(() => {
-    if (loading) {
-      setVisibleSections([])
-      setIsPrinting(true)
-      setIsComplete(false)
-      return
-    }
+    // Reset states at the start of any new data update
+    setIsComplete(false);
 
-    // Define expected sections
-    const expectedSections: string[] = data.name 
-      ? ["name", "totalFunding", "recentRound", "notableInvestors", "sources", "searchButton"]
-      : [];
+    // Define expected sections based on available data
+    const availableSections: string[] = [];
+    if (data.name) availableSections.push("name");
+    if (data.totalFunding) availableSections.push("totalFunding");
+    if (data.recentRound) availableSections.push("recentRound");
+    if (data.notableInvestors?.length) availableSections.push("notableInvestors");
+    if (data.sources?.length) availableSections.push("sources");
+    if (onSearch) availableSections.push("searchButton");
 
-    // Handle skip animation case first
+    // Handle skip animation case
     if (skipAnimation && data.name) {
-      setVisibleSections(expectedSections)
-      setIsPrinting(false)
-      setIsComplete(true)
-      return
+      setVisibleSections(availableSections);
+      setIsPrinting(false);
+      setIsComplete(true);
+      return;
     }
 
-    // Initialize sections with "name" if data.name exists
-    setVisibleSections(data.name ? ["name"] : [])
+    // If we're loading and have data, animate in real-time
+    if (loading) {
+      setIsPrinting(true);
+      
+      // Only show sections that have data
+      setVisibleSections(availableSections);
 
-    if (data.name) {
-      setIsPrinting(true)
-      setIsComplete(false)
+      // If we have all sections, complete the animation
+      if (availableSections.length === 6) {
+        setTimeout(() => {
+          setIsPrinting(false);
+          setIsComplete(true);
+        }, 500);
+      }
+      return;
+    }
+
+    // If we're not loading and have no sections visible yet,
+    // start fresh with sequential animation
+    if (!loading && visibleSections.length === 0 && data.name) {
+      setIsPrinting(true);
+      setVisibleSections(["name"]);
 
       const revealSection = (section: string, delay: number) => {
         setTimeout(() => {
-          setVisibleSections((prev) => [...prev, section])
+          setVisibleSections((prev) => {
+            // Only add the section if we have data for it
+            if (availableSections.includes(section)) {
+              return [...prev, section];
+            }
+            return prev;
+          });
 
-          if (section === expectedSections[expectedSections.length - 1]) {
+          // Check if this is the last available section
+          if (section === availableSections[availableSections.length - 1]) {
             setTimeout(() => {
-              setIsPrinting(false)
-              setIsComplete(true)
-            }, 500)
+              setIsPrinting(false);
+              setIsComplete(true);
+            }, 500);
           }
-        }, delay)
-      }
+        }, delay);
+      };
 
-      revealSection("totalFunding", animationSpeed)
-      revealSection("recentRound", animationSpeed * 2)
-      revealSection("notableInvestors", animationSpeed * 3)
-      revealSection("sources", animationSpeed * 4)
-      revealSection("searchButton", animationSpeed * 5)
-
-      if (expectedSections.length === 1) {
-        setTimeout(() => {
-          setIsPrinting(false)
-          setIsComplete(true)
-        }, animationSpeed)
-      }
+      // Only schedule animations for sections that have data
+      if (data.totalFunding) revealSection("totalFunding", animationSpeed);
+      if (data.recentRound) revealSection("recentRound", animationSpeed * 2);
+      if (data.notableInvestors?.length) revealSection("notableInvestors", animationSpeed * 3);
+      if (data.sources?.length) revealSection("sources", animationSpeed * 4);
+      if (onSearch) revealSection("searchButton", animationSpeed * 5);
     }
-  }, [data, loading, animationSpeed, skipAnimation])
+  }, [data, loading, animationSpeed, skipAnimation, onSearch]);
 
   return (
     <div className="bg-white p-4 max-w-sm mx-auto font-mono">

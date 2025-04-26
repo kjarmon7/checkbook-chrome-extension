@@ -127,7 +127,11 @@ export const Popup = () => {
       const url = new URL(tab.url);
       const domain = url.hostname;
       chromeAPI.runtime.sendMessage(
-        { type: 'FETCH_COMPANY_DATA', domain },
+        { 
+          type: 'FETCH_COMPANY_DATA', 
+          domain,
+          forceUpdate: true
+        },
         () => {
           if (chromeAPI.runtime.lastError) {
             setError(chromeAPI.runtime.lastError.message || 'Chrome runtime error');

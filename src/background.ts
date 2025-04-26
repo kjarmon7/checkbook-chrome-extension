@@ -1,5 +1,4 @@
 import { CompanyData } from './types';
-import { config } from './config/env';
 import { isDataStale, manageStorageQuota, getStorageKeyForDomain } from './utils/storage';
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -7,7 +6,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.type === 'FETCH_COMPANY_DATA') {
     console.log('Processing FETCH_COMPANY_DATA request for domain:', request.domain);
     sendResponse({ status: 'fetching' });
-    fetchCompanyDataStreaming(request.domain, sender.tab?.id);
+    fetchCompanyDataStreaming(request.domain, sender.tab?.id, request.forceUpdate);
     return true; // Keep the message channel open for async response
   }
   return false;
@@ -15,7 +14,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
 function sendUpdate(
   data: Partial<CompanyData> | { error: string } | { complete: boolean },
-  domain: string
+  domain: string,
+  forceUpdate?: boolean
 ) {
   console.log('Sending update to popup:', data);
   chrome.runtime.sendMessage({ type: 'COMPANY_DATA_UPDATE', data, domain });
@@ -27,9 +27,12 @@ function sendUpdate(
     chrome.storage.local.get([storageKey], async (result) => {
       const currentData = result[storageKey] || {};
       
-      // Check if current data is stale
-      if (currentData.lastUpdated && !isDataStale(currentData.lastUpdated)) {
-        console.log('Using cached data, not stale yet');
+      // Only use cache if we're not forcing update AND we have complete, non-stale data
+      if (!forceUpdate && 
+          currentData.lastUpdated && 
+          !isDataStale(currentData.lastUpdated) &&
+          isDataComplete(currentData)) {  // New check for data completeness
+        console.log('Using complete, non-stale cached data');
         return;
       }
 
@@ -40,7 +43,8 @@ function sendUpdate(
         ...currentData,
         ...data as Partial<CompanyData>,
         domain,
-        lastAccessed: new Date().toISOString()
+        lastAccessed: new Date().toISOString(),
+        lastUpdated: new Date().toISOString()  // Always update the timestamp when forcing
       };
       
       // Save the merged data
@@ -93,27 +97,20 @@ function sendUpdate(
   }
 }
 
-async function fetchCompanyDataStreaming(domain: string, _tabId?: number): Promise<void> {
+async function fetchCompanyDataStreaming(domain: string, _tabId?: number, forceUpdate?: boolean): Promise<void> {
   console.log('Fetching company data for domain:', domain);
   try {
     const companyName = extractCompanyName(domain);
     console.log('Extracted company name:', companyName);
     
-    sendUpdate({ name: companyName }, domain);
+    sendUpdate({ name: companyName }, domain, forceUpdate);
     
-    // Check if API key is available
-    if (!config.PERPLEXITY_API_KEY) {
-      console.error('No Perplexity API key found in configuration!');
-      sendUpdate({ error: 'No API key available. Please add your Perplexity API key to .env file.' }, domain);
-      return;
-    }
-    
-    console.log('Sending request to Perplexity API...');
+    console.log('Sending request to proxy server...');
     try {
-      const response = await fetch('https://api.perplexity.ai/chat/completions', {
+      const proxyUrl = 'https://funding-proxy.vercel.app/api/proxy';
+      const response = await fetch(proxyUrl, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${config.PERPLEXITY_API_KEY}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
@@ -179,7 +176,7 @@ async function fetchCompanyDataStreaming(domain: string, _tabId?: number): Promi
           if (done) {
             // Process any remaining complete lines in buffer
             if (currentLine.trim()) {
-              processStreamLine(currentLine.trim(), companyData, processedLines, domain);
+              processStreamLine(currentLine.trim(), companyData, processedLines, domain, forceUpdate);
             }
             break;
           }
@@ -219,7 +216,7 @@ async function fetchCompanyDataStreaming(domain: string, _tabId?: number): Promi
                       const completeLine = lines[i].trim();
                       if (completeLine) {
                         console.log('Processing complete line:', completeLine);
-                        processStreamLine(completeLine, companyData, processedLines, domain);
+                        processStreamLine(completeLine, companyData, processedLines, domain, forceUpdate);
                       }
                     }
                     
@@ -240,12 +237,12 @@ async function fetchCompanyDataStreaming(domain: string, _tabId?: number): Promi
         // First ensure the final companyData is saved
         if (Object.keys(companyData).length > 0) {
             await new Promise<void>((resolve) => {
-                sendUpdate(companyData, domain);
+                sendUpdate(companyData, domain, forceUpdate);
                 setTimeout(resolve, 100); // Give a small delay to ensure data is saved
             });
         }
         // Then send the completion message
-        sendUpdate({ complete: true } as any, domain);
+        sendUpdate({ complete: true } as any, domain, forceUpdate);
       }
     } catch (fetchError) {
       sendUpdate({ error: `Fetch operation failed: ${fetchError instanceof Error ? fetchError.message : String(fetchError)}` }, domain);
@@ -260,7 +257,8 @@ function processStreamLine(
   line: string, 
   companyData: Partial<CompanyData>, 
   processedLines: Set<string>,
-  domain: string  // Add domain parameter
+  domain: string,
+  forceUpdate?: boolean
 ): void {
   // Skip if we've already processed this exact line
   if (processedLines.has(line)) {
@@ -417,10 +415,21 @@ function processStreamLine(
 
   // Only send update if we have new information
   if (shouldUpdate) {
-    sendUpdate(update, domain);
+    sendUpdate(update, domain, forceUpdate);
   }
 }
 
 function extractCompanyName(domain: string): string {
   return domain.replace('www.', '').split('.')[0];
+}
+
+// Helper function to check if data is complete
+function isDataComplete(data: Partial<CompanyData>): boolean {
+  return Boolean(
+    data.name &&
+    data.totalFunding &&
+    Array.isArray(data.notableInvestors) && data.notableInvestors.length > 0 &&
+    Array.isArray(data.sources) && data.sources.length > 0 &&
+    data.recentRound
+  );
 }
