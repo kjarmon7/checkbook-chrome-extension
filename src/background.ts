@@ -121,7 +121,7 @@ async function fetchCompanyDataStreaming(domain: string, _tabId?: number, forceU
             content: "You are a precise data extraction assistant that only provides verified company funding information. Always respond in the exact format requested, with no additional text or explanations. Ensure all data is accurate and complete before including it."
           }, {
             role: "user",
-            content: `Extract and provide verified funding information for ${companyName} using this exact format:
+            content: `Extract and provide verified funding information for the company ${companyName} using this exact format:
 
             COMPANY_NAME: [full legal company name - do not abbreviate, must be complete]
             TOTAL_FUNDING: [exact total funding amount with currency symbol, e.g. $100M, $1.2B]

@@ -213,52 +213,15 @@ export const Receipt = ({
     // If we're loading and have data, animate in real-time
     if (loading) {
       setIsPrinting(true);
-      
-      // Only show sections that have data
       setVisibleSections(availableSections);
-
-      // If we have all sections, complete the animation
-      if (availableSections.length === 6) {
-        setTimeout(() => {
-          setIsPrinting(false);
-          setIsComplete(true);
-        }, 500);
-      }
       return;
     }
 
-    // If we're not loading and have no sections visible yet,
-    // start fresh with sequential animation
-    if (!loading && visibleSections.length === 0 && data.name) {
-      setIsPrinting(true);
-      setVisibleSections(["name"]);
-
-      const revealSection = (section: string, delay: number) => {
-        setTimeout(() => {
-          setVisibleSections((prev) => {
-            // Only add the section if we have data for it
-            if (availableSections.includes(section)) {
-              return [...prev, section];
-            }
-            return prev;
-          });
-
-          // Check if this is the last available section
-          if (section === availableSections[availableSections.length - 1]) {
-            setTimeout(() => {
-              setIsPrinting(false);
-              setIsComplete(true);
-            }, 500);
-          }
-        }, delay);
-      };
-
-      // Only schedule animations for sections that have data
-      if (data.totalFunding) revealSection("totalFunding", animationSpeed);
-      if (data.recentRound) revealSection("recentRound", animationSpeed * 2);
-      if (data.notableInvestors?.length) revealSection("notableInvestors", animationSpeed * 3);
-      if (data.sources?.length) revealSection("sources", animationSpeed * 4);
-      if (onSearch) revealSection("searchButton", animationSpeed * 5);
+    // If loading is false and we have received the complete message,
+    // stop the printing animation and show the result
+    if (!loading && data.name) {
+      setIsPrinting(false);
+      setIsComplete(true);
     }
   }, [data, loading, animationSpeed, skipAnimation, onSearch]);
 
