@@ -12,6 +12,7 @@ export const Popup = () => {
   const [isComplete, setIsComplete] = useState<boolean>(false);
   const [isCachedData, setIsCachedData] = useState<boolean>(false);
 
+
   useEffect(() => {
     console.log('Initializing Popup component');
     const chromeAPI = getChromeAPI();
@@ -118,6 +119,7 @@ export const Popup = () => {
 
   const handleSearch = async () => {
     // Reset states
+    setReceiptData({});
     setIsComplete(false);
     setIsCachedData(false);
     
@@ -126,6 +128,7 @@ export const Popup = () => {
     if (tab?.url) {
       const url = new URL(tab.url);
       const domain = url.hostname;
+      console.log('Forcing update for domain:', domain);
       chromeAPI.runtime.sendMessage(
         { 
           type: 'FETCH_COMPANY_DATA', 
