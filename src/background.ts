@@ -1,5 +1,6 @@
 import { CompanyData } from './types';
 import { isDataStale, manageStorageQuota, getStorageKeyForDomain } from './utils/storage';
+import { PROXY_SECRET_TOKEN } from './config/config.ts';
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   console.log('Background script received message:', request);
@@ -112,6 +113,7 @@ async function fetchCompanyDataStreaming(domain: string, _tabId?: number, forceU
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'x-proxy-token': PROXY_SECRET_TOKEN,
         },
         body: JSON.stringify({
           model: "sonar",
